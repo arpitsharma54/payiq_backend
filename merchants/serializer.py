@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Merchant
+from .models import Merchant, BankAccount
 
 
 class MerchantSerializer(serializers.ModelSerializer):
@@ -13,6 +13,9 @@ class MerchantSerializer(serializers.ModelSerializer):
             'name',
             'code',
             'site',
+            'return_url',
+            'callback_url',
+            'payout_callback_url',
             'api_key',
             'balance',
             'payin_min',
@@ -56,12 +59,17 @@ class MerchantSerializer(serializers.ModelSerializer):
 
 class MerchantCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating merchants (excludes read-only fields)"""
+    api_key = serializers.CharField(read_only=True, help_text="API key is auto-generated")
+    
     class Meta:
         model = Merchant
         fields = [
             'name',
             'code',
             'site',
+            'return_url',
+            'callback_url',
+            'payout_callback_url',
             'api_key',
             'payin_min',
             'payin_max',
@@ -84,5 +92,73 @@ class MerchantCreateSerializer(serializers.ModelSerializer):
                 'payout_min': 'Payout minimum must be less than or equal to payout maximum.'
             })
         
+        return attrs
+
+
+class BankAccountSerializer(serializers.ModelSerializer):
+    """Serializer for BankAccount model"""
+    payin_range = serializers.SerializerMethodField()
+    balance_display = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = BankAccount
+        fields = [
+            'id',
+            'nickname',
+            'account_holder_name',
+            'account_number',
+            'ifsc_code',
+            'upi_id',
+            'min_payin',
+            'max_payin',
+            'payin_range',
+            'balance',
+            'balance_display',
+            'transaction_count',
+            'is_enabled',
+            'is_qr',
+            'is_bank',
+            'status',
+            'last_scheduled_at',
+            'merchant',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'balance', 'transaction_count']
+    
+    def get_payin_range(self, obj):
+        """Returns formatted payin range"""
+        return obj.get_payin_range()
+    
+    def get_balance_display(self, obj):
+        """Returns formatted balance with transaction count"""
+        return obj.get_balance_display()
+
+
+class BankAccountCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating bank accounts"""
+    class Meta:
+        model = BankAccount
+        fields = [
+            'nickname',
+            'account_holder_name',
+            'account_number',
+            'ifsc_code',
+            'upi_id',
+            'min_payin',
+            'max_payin',
+            'is_enabled',
+            'is_qr',
+            'is_bank',
+            'merchant',
+            'status',
+        ]
+    
+    def validate(self, attrs):
+        """Validate that min_payin is less than or equal to max_payin"""
+        if attrs.get('min_payin', 0) > attrs.get('max_payin', 0):
+            raise serializers.ValidationError({
+                'min_payin': 'Minimum payin must be less than or equal to maximum payin.'
+            })
         return attrs
 
