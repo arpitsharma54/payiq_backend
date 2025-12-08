@@ -56,8 +56,8 @@ class UserSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'email', 'role', 'full_name', 'is_active', 'last_login', 'merchants', 'merchant_names']
-        read_only_fields = ['id', 'username', 'email', 'role', 'full_name', 'is_active', 'last_login', 'merchants', 'merchant_names']
+        fields = ['id', 'username', 'role', 'full_name', 'is_active', 'last_login', 'merchants', 'merchant_names']
+        read_only_fields = ['id', 'username', 'role', 'full_name', 'is_active', 'last_login', 'merchants', 'merchant_names']
     
     def get_merchant_names(self, obj):
         """Return list of merchant names"""
@@ -70,16 +70,16 @@ class UserCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = CustomUser
-        fields = ['username', 'email', 'full_name', 'role', 'password', 'is_active', 'merchants']
+        fields = ['username', 'full_name', 'password', 'is_active', 'merchants']
         extra_kwargs = {
             'username': {'required': True},
             'full_name': {'required': True},
-            'role': {'required': True},
         }
     
     def create(self, validated_data):
         merchants = validated_data.pop('merchants', [])
         password = validated_data.pop('password')
+        validated_data['role'] = 'admin'
         user = CustomUser.objects.create_user(**validated_data)
         user.set_password(password)
         user.save()
@@ -106,14 +106,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
 
 class UserGeneralUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for updating general user information (name, email, role, merchants)"""
+    """Serializer for updating general user information (name, role, merchants)"""
     
     class Meta:
         model = CustomUser
-        fields = ['full_name', 'email', 'role', 'merchants']
+        fields = ['full_name', 'role', 'merchants']
         extra_kwargs = {
             'full_name': {'required': False},
-            'email': {'required': False},
             'role': {'required': False},
         }
     

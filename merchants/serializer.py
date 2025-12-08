@@ -99,11 +99,16 @@ class BankAccountSerializer(serializers.ModelSerializer):
     """Serializer for BankAccount model"""
     payin_range = serializers.SerializerMethodField()
     balance_display = serializers.SerializerMethodField()
-    
+    merchant_name = serializers.CharField(source='merchant.name', read_only=True)
+    merchant_code = serializers.CharField(source='merchant.code', read_only=True)
+    bank_type_display = serializers.CharField(source='get_bank_type_display', read_only=True)
+
     class Meta:
         model = BankAccount
         fields = [
             'id',
+            'bank_type',
+            'bank_type_display',
             'nickname',
             'account_holder_name',
             'account_number',
@@ -119,8 +124,17 @@ class BankAccountSerializer(serializers.ModelSerializer):
             'is_qr',
             'is_bank',
             'status',
+            'is_approved',
             'last_scheduled_at',
             'merchant',
+            'merchant_name',
+            'merchant_code',
+            # Netbanking fields
+            'netbanking_url',
+            'login_type',
+            'username',
+            'username2',
+            'password',
             'created_at',
             'updated_at',
         ]
@@ -140,6 +154,7 @@ class BankAccountCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = BankAccount
         fields = [
+            'bank_type',
             'nickname',
             'account_holder_name',
             'account_number',
@@ -152,6 +167,13 @@ class BankAccountCreateSerializer(serializers.ModelSerializer):
             'is_bank',
             'merchant',
             'status',
+            'is_approved',
+            # Netbanking fields
+            'netbanking_url',
+            'login_type',
+            'username',
+            'username2',
+            'password',
         ]
     
     def validate(self, attrs):
@@ -160,5 +182,26 @@ class BankAccountCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'min_payin': 'Minimum payin must be less than or equal to maximum payin.'
             })
+        
+        # Validate that only one bank account per merchant can be enabled
+        is_enabled = attrs.get('is_enabled', False)
+        merchant = attrs.get('merchant') or (self.instance.merchant if self.instance else None)
+        
+        if is_enabled and merchant:
+            # Check if another bank account for this merchant is already enabled
+            other_enabled = BankAccount.objects.filter(
+                merchant=merchant,
+                is_enabled=True,
+                deleted_at=None
+            )
+            # Exclude self if updating
+            if self.instance and self.instance.pk:
+                other_enabled = other_enabled.exclude(pk=self.instance.pk)
+            
+            if other_enabled.exists():
+                raise serializers.ValidationError({
+                    'is_enabled': 'Only one bank account per merchant can be enabled at a time. Please disable the currently enabled account first.'
+                })
+        
         return attrs
 

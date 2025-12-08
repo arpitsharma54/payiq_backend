@@ -6,9 +6,38 @@ import secrets
 from core.models.base import SoftDeleteModel
 
 
+# Bank type choices for the bot system
+BANK_TYPE_CHOICES = [
+    ('iob', 'Indian Overseas Bank (IOB)'),
+    ('sbi', 'State Bank of India (SBI)'),
+    ('hdfc', 'HDFC Bank'),
+    ('icici', 'ICICI Bank'),
+    ('axis', 'Axis Bank'),
+    ('kotak', 'Kotak Mahindra Bank'),
+    ('pnb', 'Punjab National Bank (PNB)'),
+    ('bob', 'Bank of Baroda (BOB)'),
+    ('canara', 'Canara Bank'),
+    ('union', 'Union Bank of India'),
+    ('idbi', 'IDBI Bank'),
+    ('yes', 'Yes Bank'),
+    ('indusind', 'IndusInd Bank'),
+    ('federal', 'Federal Bank'),
+    ('rbl', 'RBL Bank'),
+    ('other', 'Other'),
+]
+
+
 class BankAccount(SoftDeleteModel):
     """Model for bank accounts associated with merchants"""
-    
+
+    # Bank Type for bot selection
+    bank_type = models.CharField(
+        max_length=20,
+        choices=BANK_TYPE_CHOICES,
+        default='iob',
+        help_text="Type of bank (used to select appropriate bot)"
+    )
+
     # Basic Information
     nickname = models.CharField(
         max_length=255,
@@ -75,7 +104,7 @@ class BankAccount(SoftDeleteModel):
         help_text="Whether bank transfer is enabled"
     )
     status = models.BooleanField(
-        default=True,
+        default=False,
         help_text="Account status (active/inactive)"
     )
     
@@ -86,6 +115,44 @@ class BankAccount(SoftDeleteModel):
         help_text="Last scheduled transaction time (IST)"
     )
     
+    # Netbanking fields
+    netbanking_url = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="URL for netbanking login"
+    )
+    login_type = models.CharField(
+        max_length=20,
+        choices=[('normal', 'Normal Login'), ('corp', 'Corporate Login')],
+        default='normal',
+        help_text="Type of login (normal or corporate)"
+    )
+    username = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Netbanking username"
+    )
+    username2 = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Second username for corporate login"
+    )
+    password = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Netbanking password"
+    )
+
+    # Approval status
+    is_approved = models.BooleanField(
+        default=False,
+        help_text="Whether this bank account is approved by super admin"
+    )
+
     # Relationship
     merchant = models.ForeignKey(
         'Merchant',
@@ -110,6 +177,26 @@ class BankAccount(SoftDeleteModel):
     def get_balance_display(self):
         """Returns formatted balance with transaction count"""
         return f"₹{self.balance:,.2f} ({self.transaction_count})"
+    
+    def save(self, *args, **kwargs):
+        """Override save to ensure only one bank account per merchant is enabled at a time"""
+        # If this account is being enabled, disable all other accounts for the same merchant
+        if self.is_enabled and self.merchant_id:
+            # Get all other bank accounts for this merchant (excluding self if updating)
+            other_accounts = BankAccount.objects.filter(
+                merchant_id=self.merchant_id,
+                is_enabled=True,
+                deleted_at=None
+            )
+            # Exclude self if this is an update (pk exists)
+            if self.pk:
+                other_accounts = other_accounts.exclude(pk=self.pk)
+            
+            # Disable all other enabled accounts for this merchant
+            if other_accounts.exists():
+                other_accounts.update(is_enabled=False)
+        
+        super().save(*args, **kwargs)
 
 
 class Merchant(SoftDeleteModel):
@@ -215,15 +302,29 @@ class ExtractedTransactions(SoftDeleteModel):
     """Model for extracted transactions"""
     bank_account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name='extracted_transactions')
     amount = models.PositiveIntegerField(help_text="Amount of the transaction")
-    utr = models.CharField(max_length=255, help_text="UTR of the transaction")
+    utr = models.CharField(max_length=255, help_text="UTR of the transaction", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation time")
-    is_used = models.BooleanField(default=False, help_text="Whether the transaction has been used")
+    is_used = models.BooleanField(default=False, help_text="Whether the transaction has been used", db_index=True)
 
     class Meta:
         db_table = 'extracted_transactions'
         verbose_name = 'Extracted Transaction'
         verbose_name_plural = 'Extracted Transactions'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['utr', 'is_used']),
+            models.Index(fields=['bank_account', 'utr']),
+        ]
 
     def __str__(self):
         return f"{self.amount} - {self.utr}"
+
+    @property
+    def merchant(self):
+        """Get merchant through bank_account relationship"""
+        return self.bank_account.merchant if self.bank_account else None
+
+    @property
+    def merchant_id(self):
+        """Get merchant_id through bank_account relationship"""
+        return self.bank_account.merchant_id if self.bank_account else None

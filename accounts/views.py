@@ -99,11 +99,10 @@ class UserCreateView(APIView):
         """Create a new user"""
         # Check if user is admin or superuser
         user_role = request.user.role.lower() if request.user.role else ''
-        is_admin = user_role == 'admin'
         is_superuser = request.user.is_superuser
         is_super_admin = user_role == 'super_admin'
         
-        if not (is_admin or is_superuser or is_super_admin):
+        if not (is_superuser or is_super_admin):
             user_role_display = request.user.role or 'None'
             return Response(
                 {

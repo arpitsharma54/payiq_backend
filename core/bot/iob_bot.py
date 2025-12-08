@@ -7,10 +7,30 @@ from playwright.async_api import async_playwright
 import base64
 from paddleocr import PaddleOCR
 from merchants.models import BankAccount, ExtractedTransactions
-from asgiref.sync import sync_to_async
+from asgiref.sync import sync_to_async, async_to_sync
 logger = logging.getLogger(__name__)
 from django.db import transaction
 from django.utils import timezone
+from channels.layers import get_channel_layer
+
+
+async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
+    channel_layer = get_channel_layer()
+    payload = {
+        "type": "task_update",
+        "status": status,
+        "message": message,
+    }
+    if merchant_id:
+        payload["merchant_id"] = merchant_id
+    if bank_account_id:
+        payload["bank_account_id"] = bank_account_id
+        
+    await channel_layer.group_send(
+        "task_status_updates",
+        payload,
+    )
+
 
 def extract_utr_from_text(text: str) -> str | None:
     """
@@ -203,9 +223,25 @@ async def extract_and_save_transactions(csv_path: str, bank_account_id: int) -> 
         return {"saved": 0, "skipped": 0, "errors": 1, "extracted": 0}
 
 
-async def main():
+async def run_bot_for_account(bank_account_id: int):
+    """
+    Run bot for a specific bank account.
+    This function handles the browser automation and transaction extraction for one bank account.
+    """
     browser = None
     try:
+        # Get bank account details
+        bank_account = await sync_to_async(BankAccount.objects.get)(id=bank_account_id)
+        merchant_id = bank_account.merchant_id
+        
+        # Shadow global send_status to include merchant_id and bank_account_id
+        _send_status =  send_status_to_websocket
+        async def send_status(status, message=""):
+            await _send_status(status, message, merchant_id, bank_account_id)
+
+        await send_status('running', "Starting bot for bank account")
+        logger.info(f"Starting bot for bank account: {bank_account.nickname} (ID: {bank_account_id})")
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
@@ -264,25 +300,41 @@ async def main():
                 
                 # Navigate with proper error handling
                 try:
-                    await page.goto('https://netbanking.iob.bank.in/ibanking/corplogin.do', 
+                    netbanking_url = bank_account.netbanking_url
+                    await send_status('running', 'Navigating to login page')
+                    await page.goto(netbanking_url, 
                         wait_until='networkidle',
                         timeout=60000
                     )
                     logger.info('Page loaded successfully')
+                    await send_status('running', 'Page loaded successfully')
                 except Exception as e:
                     logger.warning(f'Navigation error: {e}')
+                    await send_status('error', f'Navigation error: {e}')
                     # Try alternative approach
-                    await page.goto('https://netbanking.iob.bank.in/ibanking/corplogin.do', 
+                    
+                    await page.goto(netbanking_url, 
                         wait_until='domcontentloaded',
                         timeout=60000
                     )
                     await asyncio.sleep(3)  # Wait for page to fully load
                 
-                # Fill in login credentials
-                await page.evaluate("() => { document.getElementById('loginsubmit_loginId').value = 'voiz4599'; }")
-                await page.evaluate("() => { document.getElementById('loginsubmit_userId').value = 'voiz5599'; }")
-                await page.evaluate("() => { document.getElementById('password').value = 'Voiz@4599'; }")
-                
+                # Fill in login credentials from bank account
+                await send_status('running', 'Filling in login credentials')
+                username = bank_account.username or ''
+                username2 = bank_account.username2 or ''
+                password = bank_account.password or ''
+
+                # Corporate login uses loginsubmit_loginId and loginsubmit_userId
+                if bank_account.login_type == 'corp':
+                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_loginId').value = '{username}'; }}")
+                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_userId').value = '{username2}'; }}")
+                else:
+                    # Normal login - just use userId
+                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_userId').value = '{username}'; }}")
+
+                await page.evaluate(f"() => {{ document.getElementById('password').value = '{password}'; }}")
+                await send_status('running', 'getting captcha image')
                 # Extract captcha image
                 src = await page.evaluate('document.getElementById("captchaimg").src')
                 logger.debug(f'Captcha image source: {src}')
@@ -290,13 +342,13 @@ async def main():
                 # Decode base64
                 img_bytes = base64.b64decode(src.replace('data:image/png;base64,', ''))
                 
-                # Save to file
-                img_path = "core/bot/decoded_image.png"
+                # Save to file (use unique filename per bank account)
+                img_path = f"core/bot/decoded_image_{bank_account_id}.png"
                 with open(img_path, "wb") as f:
                     f.write(img_bytes)
                 
                 logger.info(f"Saved captcha image to {img_path}")
-                
+                await send_status('running', 'extracting captcha text')
                 # Run PaddleOCR on the saved image
                 ocr = PaddleOCR(use_textline_orientation=True, lang='en')
                 logger.info('OCR initialized')
@@ -309,11 +361,13 @@ async def main():
                 # Fill captcha and submit
                 await page.evaluate(f"() => {{ document.getElementById('loginsubmit_captchaid').value = '{cleaned_text}'; }}")
                 logger.info('Captcha filled in form')
+                await send_status('running', 'filling captcha')
                 await page.evaluate("() => { document.getElementById('btnSubmit').click(); }")
                 logger.info('Login button clicked')
-                
+                await send_status('running', 'clicking login button')
                 # Wait for login to complete - check for either success (dashboard) or error
                 try:
+                    await send_status('running', 'waiting for login to complete')
                     # Wait for either the Account statement link or an error message
                     await page.wait_for_selector(
                         "xpath=//a[contains(., 'Account statement')] | //*[contains(text(), 'Invalid')] | //*[contains(text(), 'Error')]",
@@ -321,23 +375,27 @@ async def main():
                         state="visible"
                     )
                     logger.info('Login completed, page loaded')
+                    await send_status('running', 'login completed')
                 except Exception as e:
                     logger.warning(f"Timeout waiting for post-login page: {str(e)}")
+                    await send_status('error', f"Timeout waiting for post-login page: {str(e)}")
                     # Take screenshot for debugging
-                    await page.screenshot(path='core/bot/login_timeout.png')
-                    logger.info('Screenshot saved: core/bot/login_timeout.png')
+                    await page.screenshot(path=f'core/bot/login_timeout_{bank_account_id}.png')
+                    logger.info(f'Screenshot saved: core/bot/login_timeout_{bank_account_id}.png')
                     # Check if we're still on login page (login might have failed)
                     current_url = page.url
                     if 'corplogin' in current_url:
                         logger.error('Still on login page - login may have failed')
+                        await send_status('error', 'login failed - still on login page after timeout')
                         raise Exception('Login failed - still on login page after timeout')
                 
                 # Verify we're not on login page anymore
                 current_url = page.url
                 if 'corplogin' in current_url:
                     logger.error('Login failed - still on login page')
-                    await page.screenshot(path='core/bot/login_failed.png')
-                    logger.info('Screenshot saved: core/bot/login_failed.png')
+                    await send_status('error', 'login failed - still on login page after timeout')
+                    await page.screenshot(path=f'core/bot/login_failed_{bank_account_id}.png')
+                    logger.info(f'Screenshot saved: core/bot/login_failed_{bank_account_id}.png')
                     raise Exception('Login failed - captcha or credentials may be incorrect')
                 
                 # Click on Account statement with retry logic
@@ -361,16 +419,19 @@ async def main():
                                 await button.wait_for(state="visible", timeout=10000)
                                 await button.click()
                                 logger.info(f'Account statement menu clicked using selector: {selector}')
+                                await send_status('running', 'account statement menu clicked')
                                 account_statement_clicked = True
                                 break
                             except Exception:
                                 continue
                         
                         if not account_statement_clicked:
+                            await send_status('error', 'account statement menu not found')
                             raise Exception("Account statement link not found with any selector")
                             
                     except Exception as e:
                         retry_count += 1
+                        await send_status('error', f"Attempt {retry_count} failed to click Account statement: {str(e)}. Retrying...")
                         if retry_count < max_retries:
                             logger.warning(f"Attempt {retry_count} failed to click Account statement: {str(e)}. Retrying...")
                             await asyncio.sleep(2)
@@ -379,8 +440,8 @@ async def main():
                             await asyncio.sleep(3)
                         else:
                             logger.error(f"Failed to click Account statement after {max_retries} attempts: {str(e)}")
-                            await page.screenshot(path='core/bot/account_statement_timeout.png')
-                            logger.info('Screenshot saved: core/bot/account_statement_timeout.png')
+                            await page.screenshot(path=f'core/bot/account_statement_timeout_{bank_account_id}.png')
+                            logger.info(f'Screenshot saved: core/bot/account_statement_timeout_{bank_account_id}.png')
                             raise
                 await asyncio.sleep(5)
                 
@@ -390,7 +451,7 @@ async def main():
                     sel.selectedIndex = 1;
                 """)
                 logger.info('Account number selected')
-                
+                await send_status('running', 'account number selected')
                 # Set from date
                 await page.evaluate("""() => {
                     const el = document.querySelector('#fromDate');
@@ -400,7 +461,7 @@ async def main():
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }""")
                 logger.info('From date set')
-                
+                await send_status('running', 'from date set')
                 # Set to date
                 await page.evaluate("""() => {
                     const el = document.querySelector('#toDate');
@@ -410,15 +471,15 @@ async def main():
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }""")
                 logger.info('To date set')
-                
+                await send_status('running', 'to date set')                
                 # Click view button
                 await page.evaluate("() => { document.getElementById('accountstatement_view').click(); }")
+                await send_status('running', 'clicking view button')
                 await asyncio.sleep(5)
                 
                 # Wait for the CSV download button to be ready
                 csv_button = page.locator("#accountstatement_csvAcctStmt")
                 await csv_button.wait_for(state="visible", timeout=10000)
-                
                 # Intercept download BEFORE clicking - this prevents it from going to browser's download folder
                 # expect_download() intercepts the download and holds it in Playwright's control
                 async with page.expect_download() as download_info:
@@ -427,43 +488,42 @@ async def main():
                 
                 # Get the intercepted download (this is NOT saved to browser's default location)
                 download = await download_info.value
-                
-                # Save the file ONLY to our project directory
-                # This is the ONLY place the file will be saved
-                await download.save_as("core/bot/statement.csv")
-                logger.info("CSV file saved as statement.csv (only in project directory, not in browser downloads)")
+                await send_status('running', 'csv button clicked')
+                # Save the file ONLY to our project directory (use unique filename per bank account)
+                csv_path = f"core/bot/statement_{bank_account_id}.csv"
+                await download.save_as(csv_path)
+                await send_status('running', 'csv file saved')
+                logger.info(f"CSV file saved as {csv_path} (only in project directory, not in browser downloads)")
                 
                 # Optionally, get file info
                 suggested_filename = download.suggested_filename
                 logger.info(f"Downloaded file: {suggested_filename}")
 
                 # Extract and save transactions from CSV
-                csv_path = "core/bot/statement.csv"
-                bank_account_id = 1  # You can make this configurable
-                
                 result = await extract_and_save_transactions(csv_path, bank_account_id)
                 logger.info(
-                    f"Transaction processing completed - "
+                    f"Transaction processing completed for bank account {bank_account_id} - "
                     f"Extracted: {result.get('extracted', 0)}, "
                     f"Saved: {result.get('saved', 0)}, "
                     f"Skipped: {result.get('skipped', 0)}, "
                     f"Errors: {result.get('errors', 0)}"
                 )
-                
+                await send_status('running', 'csv file processed')
                 await asyncio.sleep(10)
                 
                 # Take screenshot
-                await page.screenshot(path='core/bot/screenshot.png')
-                logger.info('Screenshot saved')
+                await page.screenshot(path=f'core/bot/screenshot_{bank_account_id}.png')
                 
                 # Logout
                 logout_button = page.locator("xpath=//a[contains(., 'Logout ')]")
                 await logout_button.click()
                 logger.info('Logout button clicked')
+                await send_status('running', 'logout button clicked')
                 await asyncio.sleep(10)
-                logger.info('Bot execution completed')
+                await send_status('completed', 'Bot execution finished')
+                logger.info(f'Bot execution completed for bank account {bank_account_id}')
             except Exception as e:
-                logger.error(f"Bot execution failed: {str(e)}", exc_info=True)
+                logger.error(f"Bot execution failed for bank account {bank_account_id}: {str(e)}", exc_info=True)
                 # Close browser before re-raising
                 if browser:
                     try:
@@ -481,14 +541,49 @@ async def main():
                     except Exception as e:
                         logger.warning(f"Error closing browser: {str(e)}")
     except Exception as e:
-        logger.error(f"Failed to initialize browser: {str(e)}", exc_info=True)
+        logger.error(f"Failed to initialize browser for bank account {bank_account_id}: {str(e)}", exc_info=True)
         raise
 
 
+async def main():
+    """
+    Main function that runs bot for all enabled bank accounts.
+    """
+    try:
+        # Get all enabled bank accounts
+        enabled_accounts = await sync_to_async(list)(
+            BankAccount.objects.filter(is_enabled=True, deleted_at=None).values_list('id', flat=True)
+        )
+        
+        if not enabled_accounts:
+            logger.info("No enabled bank accounts found. Bot will not run.")
+            return
+        
+        logger.info(f"Found {len(enabled_accounts)} enabled bank account(s). Starting bot execution...")
+        
+        # Run bot for each enabled bank account
+        for bank_account_id in enabled_accounts:
+            try:
+                await run_bot_for_account(bank_account_id)
+                logger.info(f"Successfully completed bot execution for bank account {bank_account_id}")
+            except Exception as e:
+                logger.error(f"Failed to run bot for bank account {bank_account_id}: {str(e)}", exc_info=True)
+                # Continue with next account even if one fails
+                continue
+        
+        logger.info("Bot execution completed for all enabled bank accounts")
+    except Exception as e:
+        logger.error(f"Failed to get enabled bank accounts: {str(e)}", exc_info=True)
+        raise
+
+import asyncio
+
+def run_async(func, *args, **kwargs):
+    return asyncio.run(func(*args, **kwargs))
 def run_bot():
     try:
         print("Running bot...")
-        asyncio.get_event_loop().run_until_complete(main())
+        run_async(main)
         print("Verifying transactions...")
         logger.info("Starting transaction verification...")
         assigned_payins = Payin.objects.filter(status='assigned')
@@ -496,11 +591,15 @@ def run_bot():
         
         verified_count = 0
         duplicate_count = 0
-        dispute_count = 0
+        dropped_count = 0
         not_found_count = 0
         error_count = 0
-        
         for payin in assigned_payins:
+            merchant_id = payin.merchant_id
+            _send_status = send_status_to_websocket
+            def send_status(status, message=""):
+                asyncio.run(_send_status(status, message, merchant_id))
+            send_status('running', 'verifying transactions')
             try:
                 # Wrap each payin verification in a transaction for atomicity
                 with transaction.atomic():
@@ -532,7 +631,11 @@ def run_bot():
                             f"is already used. Marking payin as duplicate."
                         )
                         payin.status = 'duplicate'
-                        payin.save(update_fields=['status'])
+                        # Calculate duration if assigned_at exists
+                        if hasattr(payin, 'assigned_at') and payin.assigned_at:
+                            payin.duration = timezone.now() - payin.assigned_at
+                            logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
+                        payin.save(update_fields=['status', 'duration'])
                         duplicate_count += 1
                     
                     # Check if amount matches
@@ -542,9 +645,13 @@ def run_bot():
                             f"Payin amount: {payin.pay_amount}, Transaction amount: {transaction_obj.amount}. "
                             f"Marking payin as dispute."
                         )
-                        payin.status = 'dispute'
-                        payin.save(update_fields=['status'])
-                        dispute_count += 1
+                        payin.status = 'dropped'
+                        # Calculate duration if assigned_at exists
+                        if hasattr(payin, 'assigned_at') and payin.assigned_at:
+                            payin.duration = timezone.now() - payin.assigned_at
+                            logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
+                        payin.save(update_fields=['status', 'duration'])
+                        dropped_count += 1
                     
                     # Transaction is valid
                     else:
@@ -583,15 +690,16 @@ def run_bot():
             f"Transaction verification completed - "
             f"Verified: {verified_count}, "
             f"Duplicates: {duplicate_count}, "
-            f"Disputes: {dispute_count}, "
+            f"Dropped: {dropped_count}, "
             f"Not found: {not_found_count}, "
             f"Errors: {error_count}"
         )
+        send_status('running', 'transaction verification completed')
         
         return {
             "verified": verified_count,
             "duplicates": duplicate_count,
-            "disputes": dispute_count,
+            "disputes": dropped_count,
             "not_found": not_found_count,
             "errors": error_count,
             "total": assigned_payins.count()

@@ -5,25 +5,18 @@ from core.models.base import SoftDeleteModel
 USER_ROLE_CHOICES = [
     ('super_admin', 'Super Admin'),
     ('admin', 'Admin'),
-    ('transactions', 'Transactions'),
-    ('merchant', 'Merchant'),
-    ('vendor', 'Vendor'),
-    ('customer_service', 'Customer Service'),
-    ('operations', 'Operations'),
-    ('agent', 'Agent'),
 ]
 
 class CustomUserManager(BaseUserManager):
-    def create_user(self, username, email=None, password=None, **extra_fields):
+    def create_user(self, username, password=None, **extra_fields):
         if not username:
             raise ValueError('The Username field must be set')
-        email = self.normalize_email(email)
-        user = self.model(username=username, email=email, **extra_fields)
+        user = self.model(username=username, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
         
-    def create_superuser(self, username, email=None, password=None, **extra_fields):
+    def create_superuser(self, username, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
@@ -33,7 +26,7 @@ class CustomUserManager(BaseUserManager):
             raise ValueError('Superuser must have is_staff=True.')
         if extra_fields.get('is_superuser') is not True:
             raise ValueError('Superuser must have is_superuser=True.')
-        return self.create_user(username, email=email, password=password, **extra_fields)
+        return self.create_user(username, password=password, **extra_fields)
 
 class CustomUser(AbstractBaseUser, SoftDeleteModel, PermissionsMixin):
     full_name = models.CharField(max_length=255)
@@ -41,7 +34,6 @@ class CustomUser(AbstractBaseUser, SoftDeleteModel, PermissionsMixin):
     role = models.CharField(max_length=255, choices=USER_ROLE_CHOICES)
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
-    email = models.EmailField(max_length=255, unique=True, blank=True, null=True, default=None)
     merchants = models.ManyToManyField(
         'merchants.Merchant',
         related_name='users',

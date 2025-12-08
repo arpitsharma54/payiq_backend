@@ -15,16 +15,14 @@ urlpatterns = [
     # Dashboard
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     
-    # List and create payins
-    path('', PayinListView.as_view(), name='payin-list'),
+    # Public payment session endpoint (no authentication required)
+    # This must come BEFORE the empty path to ensure it's matched correctly
+    path('public/session/', PayinPublicSessionView.as_view(), name='payin-public-session'),
     
     # Create payment link
     path('create-payment-link/', PayinCreatePaymentLinkView.as_view(), name='payin-create-payment-link'),
     
-    # Public payment session endpoint (no authentication required)
-    path('public/session/', PayinPublicSessionView.as_view(), name='payin-public-session'),
-    
-    # Payin detail, update, delete
+    # Payin detail, update, delete (must come before list to avoid matching)
     path('<int:pk>/', PayinDetailView.as_view(), name='payin-detail'),
     
     # Individual action endpoints
@@ -34,5 +32,8 @@ urlpatterns = [
     
     # Combined actions endpoint (alternative to individual endpoints)
     path('<int:pk>/actions/<str:action>/', PayinActionsView.as_view(), name='payin-actions'),
+    
+    # List and create payins (must be last as it's a catch-all)
+    path('', PayinListView.as_view(), name='payin-list'),
 ]
 

@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
-from django.db.models import Q, Sum, Count, F, DecimalField
+from django.db.models import Q, Sum, Count, F, DecimalField, Sum
 from django.db.models.functions import TruncDate, TruncHour
 from .models import Payin
 from merchants.models import Merchant, BankAccount
@@ -14,6 +14,7 @@ from .serializer import (
     PayinUpdateSerializer,
     PayinListSerializer
 )
+from settlements.models import Settlement
 import random
 import string
 import uuid
@@ -308,16 +309,19 @@ class PayinCreatePaymentLinkView(APIView):
                     'error': 'You do not have access to this merchant'
                 }, status=status.HTTP_403_FORBIDDEN)
         
-        # 2. Get an enabled bank account for this merchant
-        # Try to get an enabled bank account, or any bank account if none are enabled
-        bank_account = merchant.bank_accounts.filter(is_enabled=True, status=True).first()
-        if not bank_account:
-            bank_account = merchant.bank_accounts.filter(status=True).first()
+        # 2. Check if merchant has at least one enabled bank account
+        enabled_bank_accounts = merchant.bank_accounts.filter(
+            status=True,
+            deleted_at=None
+        )
         
-        if not bank_account:
+        if not enabled_bank_accounts.exists():
             return Response({
-                'error': 'No bank account found for this merchant. Please add a bank account first.'
+                'error': 'Cannot create payment link. No enabled bank accounts found for this merchant. Please enable at least one bank account first.'
             }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get the first enabled bank account
+        bank_account = enabled_bank_accounts.first()
         
         # Generate a unique code - keep trying until we find one that doesn't exist
         max_attempts = 100  # Safety limit to prevent infinite loops
@@ -423,17 +427,28 @@ class PayinPublicSessionView(APIView):
         
         # Get the associated bank account
         bank_account = None
+        
+        # First, try to find bank account by nickname or account holder name if payin.bank is set
         if payin.bank:
-            # Try to find bank account by nickname or account holder name
             bank_account = payin.merchant.bank_accounts.filter(
                 Q(nickname=payin.bank) | Q(account_holder_name=payin.bank),
-                status=True
+                status=True,
+                deleted_at=None
             ).first()
-            if not bank_account:
-                # Fallback to any enabled bank account
-                bank_account = payin.merchant.bank_accounts.filter(
-                    is_enabled=True, status=True
-                ).first()
+        
+        # If not found or payin.bank is not set, fallback to any enabled bank account
+        if not bank_account:
+            bank_account = payin.merchant.bank_accounts.filter(
+                status=True,
+                deleted_at=None
+            ).first()
+        
+        # If still no bank account found, return an error
+        if not bank_account:
+            return Response({
+                'error': 'No enabled bank account found for this merchant. Please contact support.',
+                'merchant_name': payin.merchant.name
+            }, status=status.HTTP_404_NOT_FOUND)
         
         # Calculate expiry time (10 minutes from creation)
         expiry_timestamp = None
@@ -613,10 +628,10 @@ class DashboardView(APIView):
         withdrawal_percentage = Decimal('0.00')
         
         # Settlement (deposits - commission)
-        settlement = all_time_deposits - all_time_commission
+        settlement = Settlement.objects.filter(merchant__in=merchant_ids, status='success').aggregate(settlement=Sum('amount'))['settlement']
         
         # Net Balance (settlement - withdrawals)
-        net_balance = settlement - total_withdrawals
+        net_balance = (total_deposits - settlement) - all_time_commission
         
         # Generate chart data based on time range
         chart_data = []
