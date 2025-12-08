@@ -43,15 +43,18 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'corsheaders',
     'rest_framework',
     'accounts',
     'merchants',
     'deposit',
+    'settlements',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -80,6 +83,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'payiq.wsgi.application'
+ASGI_APPLICATION = 'payiq.asgi.application'
 
 
 # Database
@@ -126,10 +130,22 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler'
 }
 
+# Bot execution interval in seconds (how often bot runs when started)
+BOT_EXECUTION_INTERVAL = 60  # Default: 60 seconds (1 minute)
+
 CELERY_BEAT_SCHEDULE = {
     'run-bot-every-30-seconds': {
         'task': 'deposit.task.run_bot',
         'schedule': 60,
+    },
+}
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
     },
 }
 
@@ -198,6 +214,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'static/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -205,6 +222,10 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Logging configuration
+# Create logs directory if it doesn't exist
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -224,6 +245,27 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
         },
+        'bot_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOGS_DIR / 'bot.log'),
+            'maxBytes': 10 * 1024 * 1024,  # 10MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+        },
+        'celery_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOGS_DIR / 'celery.log'),
+            'maxBytes': 10 * 1024 * 1024,  # 10MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+        },
+        'deposit_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOGS_DIR / 'deposit.log'),
+            'maxBytes': 10 * 1024 * 1024,  # 10MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+        },
     },
     'root': {
         'handlers': ['console'],
@@ -236,17 +278,17 @@ LOGGING = {
             'propagate': False,
         },
         'celery': {
-            'handlers': ['console'],
+            'handlers': ['console', 'celery_file'],
             'level': 'INFO',
             'propagate': False,
         },
         'core.bot': {
-            'handlers': ['console'],
+            'handlers': ['console', 'bot_file'],
             'level': 'INFO',
             'propagate': False,
         },
         'deposit': {
-            'handlers': ['console'],
+            'handlers': ['console', 'deposit_file'],
             'level': 'INFO',
             'propagate': False,
         },

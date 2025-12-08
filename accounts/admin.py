@@ -10,15 +10,15 @@ class CustomUserAdmin(BaseUserAdmin):
     form = UserChangeForm
     add_form = UserCreationForm
     
-    list_display = ('username', 'email', 'full_name', 'role', 'is_active', 'is_staff', 'is_superuser')
+    list_display = ('username', 'full_name', 'role', 'is_active', 'is_staff', 'is_superuser')
     list_filter = ('role', 'is_active', 'is_staff', 'is_superuser', 'created_at')
-    search_fields = ('username', 'full_name', 'email')
+    search_fields = ('username', 'full_name')
     list_per_page = 10
     ordering = ('username',)
     
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
-        ('Personal info', {'fields': ('full_name', 'email')}),
+        ('Personal info', {'fields': ('full_name',)}),
         ('Permissions', {
             'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions'),
         }),
@@ -29,7 +29,7 @@ class CustomUserAdmin(BaseUserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('username', 'email', 'full_name', 'role', 'password1', 'password2'),
+            'fields': ('username', 'full_name', 'role', 'password1', 'password2'),
         }),
     )
     

@@ -66,16 +66,29 @@ class PayinCreateSerializer(serializers.ModelSerializer):
         merchant = attrs.get('merchant')
         pay_amount = attrs.get('pay_amount')
         
-        if merchant and pay_amount:
-            # Check if amount is within merchant's payin range
-            if merchant.payin_min > 0 and pay_amount < merchant.payin_min:
+        if merchant:
+            # Check if merchant has at least one enabled bank account
+            from merchants.models import BankAccount
+            enabled_accounts = BankAccount.objects.filter(
+                merchant=merchant,
+                is_enabled=True,
+                deleted_at=None
+            )
+            if not enabled_accounts.exists():
                 raise serializers.ValidationError({
-                    'pay_amount': f'Amount must be at least ₹{merchant.payin_min}'
+                    'merchant': 'Cannot create payment link. No enabled bank accounts found for this merchant. Please enable at least one bank account first.'
                 })
-            if merchant.payin_max > 0 and pay_amount > merchant.payin_max:
-                raise serializers.ValidationError({
-                    'pay_amount': f'Amount must not exceed ₹{merchant.payin_max}'
-                })
+            
+            if pay_amount:
+                # Check if amount is within merchant's payin range
+                if merchant.payin_min > 0 and pay_amount < merchant.payin_min:
+                    raise serializers.ValidationError({
+                        'pay_amount': f'Amount must be at least ₹{merchant.payin_min}'
+                    })
+                if merchant.payin_max > 0 and pay_amount > merchant.payin_max:
+                    raise serializers.ValidationError({
+                        'pay_amount': f'Amount must not exceed ₹{merchant.payin_max}'
+                    })
         
         return attrs
     
