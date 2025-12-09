@@ -34,7 +34,7 @@ def run_bot():
     try:
         # Lock acquired, execute the bot
         logger.info("Starting bot task execution...")
-        from core.bot.iob_bot import run_bot as execute_bot
+        from core.bot.iob_bot.iob_bot import run_bot as execute_bot
         execute_bot()
         logger.info("Bot task execution completed.")
         return "Task completed successfully"

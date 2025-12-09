@@ -43,24 +43,24 @@ def get_supported_bank_types() -> list:
 @register_bot('iob')
 async def run_iob_bot(bank_account_id: int):
     """Run IOB bank bot"""
-    from .iob_bot import run_bot_for_account
+    from .iob_bot.iob_bot import run_bot_for_account
     return await run_bot_for_account(bank_account_id)
 
 
 # Placeholder registrations for future bank bots
-# When you implement a new bank bot, create a new file (e.g., sbi_bot.py)
-# and register it here:
+# When you implement a new bank bot, create a new folder (e.g., sbi_bot/)
+# with sbi_bot.py inside it and register it here:
 
 # @register_bot('sbi')
 # async def run_sbi_bot(bank_account_id: int):
 #     """Run SBI bank bot"""
-#     from .sbi_bot import run_bot_for_account
+#     from .sbi_bot.sbi_bot import run_bot_for_account
 #     return await run_bot_for_account(bank_account_id)
 
 # @register_bot('hdfc')
 # async def run_hdfc_bot(bank_account_id: int):
 #     """Run HDFC bank bot"""
-#     from .hdfc_bot import run_bot_for_account
+#     from .hdfc_bot.hdfc_bot import run_bot_for_account
 #     return await run_bot_for_account(bank_account_id)
 
 

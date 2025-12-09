@@ -6,11 +6,24 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from .serializer import LoginSerializer, UserSerializer, UserCreateSerializer, UserUpdateStatusSerializer, UserUpdateSerializer, UserGeneralUpdateSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import CustomUser
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 
 class LoginView(APIView):
+    """User login endpoint to obtain JWT tokens."""
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=['Authentication'],
+        summary='User Login',
+        description='Authenticate user and receive JWT access and refresh tokens.',
+        request=LoginSerializer,
+        responses={
+            200: OpenApiResponse(description='Login successful - returns JWT tokens and user info'),
+            400: OpenApiResponse(description='Invalid credentials or inactive account'),
+            500: OpenApiResponse(description='Server error during login'),
+        }
+    )
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         
@@ -65,6 +78,12 @@ class UserListView(APIView):
     """List all users"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Users'],
+        summary='List Users',
+        description='Get list of all users. Non-super_admin users only see users that share at least one merchant.',
+        responses={200: UserSerializer(many=True)}
+    )
     def get(self, request):
         """Get list of all users (excluding superusers)"""
         users = CustomUser.objects.filter(
@@ -95,6 +114,17 @@ class UserCreateView(APIView):
     """Create a new user - Admin only"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Users'],
+        summary='Create User',
+        description='Create a new user. Only super_admin can create users. Cannot create super_admin users via API.',
+        request=UserCreateSerializer,
+        responses={
+            201: UserSerializer,
+            400: OpenApiResponse(description='Validation error'),
+            403: OpenApiResponse(description='Permission denied'),
+        }
+    )
     def post(self, request):
         """Create a new user"""
         # Check if user is admin or superuser
@@ -139,6 +169,17 @@ class UserUpdateStatusView(APIView):
     """Update user status (enabled/disabled) - Admin only"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Users'],
+        summary='Update User Status',
+        description='Enable or disable a user account. Only admin/super_admin can perform this action.',
+        request=UserUpdateStatusSerializer,
+        responses={
+            200: UserSerializer,
+            403: OpenApiResponse(description='Permission denied'),
+            404: OpenApiResponse(description='User not found'),
+        }
+    )
     def patch(self, request, user_id):
         """Update user is_active status"""
         # Check if user is admin, super_admin, or superuser
@@ -178,6 +219,17 @@ class UserUpdateView(APIView):
     """Update user information - Admin only"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Users'],
+        summary='Update User',
+        description='Update user information (full_name, role, merchants). Only admin/super_admin can perform this action.',
+        request=UserGeneralUpdateSerializer,
+        responses={
+            200: UserSerializer,
+            403: OpenApiResponse(description='Permission denied'),
+            404: OpenApiResponse(description='User not found'),
+        }
+    )
     def patch(self, request, user_id):
         """Update user information (general info or merchants)"""
         # Check if user is admin, super_admin, or superuser
