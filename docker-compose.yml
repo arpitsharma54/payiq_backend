@@ -75,8 +75,47 @@ services:
       - payiq_network
     develop:
       watch:
-        - path: .
-          action: rebuild
+        # Watch Django apps
+      - path: ./accounts
+        action: sync
+        target: /app/accounts
+
+      - path: ./core
+        action: sync
+        target: /app/core
+
+      - path: ./deposit
+        action: sync
+        target: /app/deposit
+
+      - path: ./logs
+        action: sync
+        target: /app/logs
+
+      - path: ./merchants
+        action: sync
+        target: /app/merchants
+
+      - path: ./payiq
+        action: sync
+        target: /app/payiq
+
+      - path: ./settlements
+        action: sync
+        target: /app/settlements
+
+      - path: ./ws
+        action: sync
+        target: /app/ws
+
+      # Watch manage.py
+      - path: ./manage.py
+        action: sync
+        target: /app/manage.py
+
+      # Auto-rebuild when requirements change
+      - path: ./requirements.txt
+        action: rebuild
 
   # Celery Worker
   celery-worker:
