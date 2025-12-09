@@ -16,11 +16,22 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
+from django.http import JsonResponse
+
+def health(request):
+    return JsonResponse({"status": "ok"}, status=200)
 
 urlpatterns = [
+   path("health/", health),
     path('admin/', admin.site.urls),
     path('api/v1/auth/', include('accounts.urls')),
     path('api/v1/merchants/', include('merchants.urls')),
     path('api/v1/deposits/', include('deposit.urls')),
     path('api/v1/settlements/', include('settlements.urls')),
+
+    # API Documentation
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    path('api/swagger/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 ]

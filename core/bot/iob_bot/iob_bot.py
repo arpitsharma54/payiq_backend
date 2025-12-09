@@ -13,6 +13,8 @@ from django.db import transaction
 from django.utils import timezone
 from channels.layers import get_channel_layer
 
+# Initialize once per Celery worker
+OCR_MODEL = PaddleOCR(use_textline_orientation=True, lang='en')
 
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
     channel_layer = get_channel_layer()
@@ -248,14 +250,18 @@ async def run_bot_for_account(bank_account_id: int):
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
                     "--disable-accelerated-2d-canvas",
+                    "--disable-webgl",
+                    "--disable-webgl2",
+                    "--disable-features=VizDisplayCompositor",
+                    "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-zygote",
-                    "--disable-gpu",
                     "--window-size=1920,1080",
-                    "--disable-features=DownloadBubble,DownloadBubbleV2"  # Disable download UI
+                    "--disable-features=DownloadBubble,DownloadBubbleV2"
                 ]
             )
             
@@ -349,10 +355,7 @@ async def run_bot_for_account(bank_account_id: int):
                 
                 logger.info(f"Saved captcha image to {img_path}")
                 await send_status('running', 'extracting captcha text')
-                # Run PaddleOCR on the saved image
-                ocr = PaddleOCR(use_textline_orientation=True, lang='en')
-                logger.info('OCR initialized')
-                result = ocr.predict(img_path)
+                result = OCR_MODEL.predict(img_path)
                 logger.info('OCR prediction completed')
                 text = result[0]["rec_texts"][0]
                 logger.info(f'OCR extracted text: {text}')

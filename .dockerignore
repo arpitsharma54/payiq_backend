@@ -1,0 +1,76 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.coverage
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+
+# Local development files
+.env
+*.sqlite3
+db.sqlite3
+celerybeat-schedule*
+celerybeat.pid
+
+# Logs (will be generated inside container)
+logs/
+*.log
+
+# Static files (will be collected inside container)
+static/
+
+# Bot artifacts (screenshots, test files)
+core/bot/*.png
+core/bot/*.jpg
+core/bot/*.csv
+core/bot/decoded_*.txt
+
+# Documentation (not needed in container)
+*.md
+!requirements.txt
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# macOS
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak

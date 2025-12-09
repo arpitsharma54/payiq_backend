@@ -12,6 +12,7 @@ from .serializer import (
     SettlementCreateSerializer,
     SettlementUpdateSerializer
 )
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 
 class SettlementAccountListView(APIView):
@@ -22,6 +23,17 @@ class SettlementAccountListView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Settlement Accounts'],
+        summary='List Settlement Accounts',
+        description='Get list of all settlement accounts with optional filters.',
+        parameters=[
+            OpenApiParameter(name='nickname', description='Filter by nickname', required=False, type=str),
+            OpenApiParameter(name='merchant', description='Filter by merchant ID', required=False, type=int),
+            OpenApiParameter(name='instrument_type', description='Filter by type', required=False, type=str, enum=['bank', 'crypto']),
+        ],
+        responses={200: SettlementAccountSerializer(many=True)}
+    )
     def get(self, request):
         """Get list of all settlement accounts (excluding soft-deleted) with optional filters"""
         queryset = SettlementAccount.objects.filter(deleted_at=None)
@@ -47,6 +59,16 @@ class SettlementAccountListView(APIView):
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        tags=['Settlement Accounts'],
+        summary='Create Settlement Account',
+        description='Create a new settlement account. Only admins can create.',
+        request=SettlementAccountCreateSerializer,
+        responses={
+            201: SettlementAccountSerializer,
+            403: OpenApiResponse(description='Only admins can create settlement accounts'),
+        }
+    )
     def post(self, request):
         """Create a new settlement account"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -73,12 +95,14 @@ class SettlementAccountDetailView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(tags=['Settlement Accounts'], summary='Get Settlement Account', responses={200: SettlementAccountSerializer})
     def get(self, request, pk):
         """Get a specific settlement account by ID"""
         settlement_account = get_object_or_404(SettlementAccount, pk=pk, deleted_at=None)
         serializer = SettlementAccountSerializer(settlement_account)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(tags=['Settlement Accounts'], summary='Update Settlement Account (Full)', request=SettlementAccountCreateSerializer, responses={200: SettlementAccountSerializer})
     def put(self, request, pk):
         """Full update of a settlement account"""
         settlement_account = get_object_or_404(SettlementAccount, pk=pk, deleted_at=None)
@@ -88,6 +112,7 @@ class SettlementAccountDetailView(APIView):
         response_serializer = SettlementAccountSerializer(updated_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(tags=['Settlement Accounts'], summary='Update Settlement Account (Partial)', request=SettlementAccountCreateSerializer, responses={200: SettlementAccountSerializer})
     def patch(self, request, pk):
         """Partial update of a settlement account"""
         settlement_account = get_object_or_404(SettlementAccount, pk=pk, deleted_at=None)
@@ -97,6 +122,7 @@ class SettlementAccountDetailView(APIView):
         response_serializer = SettlementAccountSerializer(updated_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(tags=['Settlement Accounts'], summary='Delete Settlement Account', description='Soft delete a settlement account')
     def delete(self, request, pk):
         """Soft delete a settlement account"""
         settlement_account = get_object_or_404(SettlementAccount, pk=pk, deleted_at=None)
@@ -114,6 +140,17 @@ class SettlementListView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Settlements'],
+        summary='List Settlements',
+        description='Get list of all settlements with optional filters.',
+        parameters=[
+            OpenApiParameter(name='id', description='Filter by settlement ID', required=False, type=int),
+            OpenApiParameter(name='merchant', description='Filter by merchant ID', required=False, type=int),
+            OpenApiParameter(name='status', description='Filter by status', required=False, type=str, enum=['pending', 'processing', 'success', 'failed', 'cancelled']),
+        ],
+        responses={200: SettlementSerializer(many=True)}
+    )
     def get(self, request):
         """Get list of all settlements (excluding soft-deleted) with optional filters"""
         queryset = Settlement.objects.filter(deleted_at=None)
@@ -139,6 +176,16 @@ class SettlementListView(APIView):
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        tags=['Settlements'],
+        summary='Create Settlement',
+        description='Create a new settlement/payout. Only admins can create.',
+        request=SettlementCreateSerializer,
+        responses={
+            201: SettlementSerializer,
+            403: OpenApiResponse(description='Only admins can create settlements'),
+        }
+    )
     def post(self, request):
         """Create a new settlement"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -164,12 +211,14 @@ class SettlementDetailView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(tags=['Settlements'], summary='Get Settlement', responses={200: SettlementSerializer})
     def get(self, request, pk):
         """Get a specific settlement by ID"""
         settlement = get_object_or_404(Settlement, pk=pk, deleted_at=None)
         serializer = SettlementSerializer(settlement)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(tags=['Settlements'], summary='Update Settlement', request=SettlementUpdateSerializer, responses={200: SettlementSerializer})
     def patch(self, request, pk):
         """Update settlement status and reference"""
         settlement = get_object_or_404(Settlement, pk=pk, deleted_at=None)
@@ -179,6 +228,7 @@ class SettlementDetailView(APIView):
         response_serializer = SettlementSerializer(updated_settlement)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
+    @extend_schema(tags=['Settlements'], summary='Delete Settlement', description='Soft delete a settlement')
     def delete(self, request, pk):
         """Soft delete a settlement"""
         settlement = get_object_or_404(Settlement, pk=pk, deleted_at=None)
@@ -195,6 +245,15 @@ class SettlementResetView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Settlements'],
+        summary='Reset Settlement',
+        description='Reset settlement status to pending and clear reference_id. Only admins can reset.',
+        responses={
+            200: SettlementSerializer,
+            403: OpenApiResponse(description='Only admins can reset settlements'),
+        }
+    )
     def post(self, request, pk):
         """Reset settlement status to pending"""
         settlement = get_object_or_404(Settlement, pk=pk, deleted_at=None)

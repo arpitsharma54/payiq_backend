@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'channels',
     'corsheaders',
     'rest_framework',
+    'drf_spectacular',
     'accounts',
     'merchants',
     'deposit',
@@ -88,18 +89,25 @@ ASGI_APPLICATION = 'payiq.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        # 'ENGINE': 'django.db.backends.postgresql',
-        # 'NAME': os.environ.get('POSTGRES_DB'),
-        # 'USER': os.environ.get('POSTGRES_USER'),
-        # 'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
-        # 'HOST': os.environ.get('POSTGRES_HOST'),
-        # 'PORT': os.environ.get('POSTGRES_PORT'),
+# Use PostgreSQL if POSTGRES_HOST is set (Docker), otherwise use SQLite (local dev)
+if os.environ.get('POSTGRES_HOST'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('POSTGRES_DB', 'payiq_db'),
+            'USER': os.environ.get('POSTGRES_USER', 'payiq_user'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'payiq_password'),
+            'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+            'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -127,7 +135,59 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
-    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler'
+    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# DRF Spectacular (OpenAPI/Redoc) Configuration
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'PayIQ Backend API',
+    'DESCRIPTION': '''
+## PayIQ Payment Processing API
+
+PayIQ is a comprehensive payment processing platform that handles:
+- **Deposits (Payins)**: Accept payments from customers via UPI and bank transfers
+- **Settlements (Payouts)**: Process withdrawals to merchant bank accounts
+- **Merchant Management**: Multi-tenant merchant configuration
+- **Bank Account Management**: Automated bank account monitoring with bot support
+
+### Authentication
+All endpoints (except public payment sessions) require JWT Bearer token authentication.
+
+```
+Authorization: Bearer <access_token>
+```
+
+### User Roles
+- **super_admin**: Full system access to all merchants and features
+- **admin**: Can manage users, merchants, and settlements for assigned merchants
+
+### Multi-Tenant Support
+Non-super-admin users only have access to merchants they are assigned to.
+    ''',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'TAGS': [
+        {'name': 'Authentication', 'description': 'User login and token management'},
+        {'name': 'Users', 'description': 'User management operations'},
+        {'name': 'Merchants', 'description': 'Merchant configuration and management'},
+        {'name': 'Bank Accounts', 'description': 'Bank account management and bot control'},
+        {'name': 'Deposits', 'description': 'Payment deposits (payins) management'},
+        {'name': 'Public Payment', 'description': 'Public payment session endpoints (no auth required)'},
+        {'name': 'Dashboard', 'description': 'Analytics and statistics'},
+        {'name': 'Settlement Accounts', 'description': 'Settlement account configuration'},
+        {'name': 'Settlements', 'description': 'Settlement/payout transactions'},
+    ],
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayOperationId': False,
+    },
+    'REDOC_UI_SETTINGS': {
+        'hideDownloadButton': False,
+        'expandResponses': '200,201',
+    },
 }
 
 # Bot execution interval in seconds (how often bot runs when started)
@@ -140,17 +200,21 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+# Redis configuration (supports Docker and local development)
+REDIS_HOST = os.environ.get('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [(REDIS_HOST, REDIS_PORT)],
         },
     },
 }
 
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
-CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:{REDIS_PORT}/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:{REDIS_PORT}/0')
 
 # Celery logging configuration
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False  # Don't hijack root logger, use Django's logging config
@@ -177,12 +241,8 @@ SIMPLE_JWT = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-]
+# Allow configuration via environment variable (comma-separated)
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000').split(',')
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -215,6 +275,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'static/'
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
   db:
     image: postgres:16-alpine
     container_name: payiq_postgres
@@ -14,11 +15,140 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-payiq_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-payiq_user} -d ${POSTGRES_DB:-payiq_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - payiq_network
+
+  # Redis (Message Broker & Cache)
+  redis:
+    image: redis:7-alpine
+    container_name: payiq_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - payiq_network
+
+  # Django Web Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: payiq_web
+    restart: unless-stopped
+    command: web
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - DEBUG=${DEBUG:-0}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - POSTGRES_DB=${POSTGRES_DB:-payiq_db}
+      - POSTGRES_USER=${POSTGRES_USER:-payiq_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-payiq_password}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - static_data:/app/static
+      - logs_data:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - payiq_network
+    develop:
+      watch:
+        - path: .
+          action: rebuild
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: payiq_celery_worker
+    restart: unless-stopped
+    command: celery-worker
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - DEBUG=${DEBUG:-0}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - POSTGRES_DB=${POSTGRES_DB:-payiq_db}
+      - POSTGRES_USER=${POSTGRES_USER:-payiq_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-payiq_password}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
+    volumes:
+      - logs_data:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - payiq_network
+
+  # # Celery Beat (Scheduler)
+  # celery-beat:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: payiq_celery_beat
+  #   restart: unless-stopped
+  #   command: celery-beat
+  #   environment:
+  #     - SECRET_KEY=${SECRET_KEY}
+  #     - DEBUG=${DEBUG:-0}
+  #     - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  #     - POSTGRES_DB=${POSTGRES_DB:-payiq_db}
+  #     - POSTGRES_USER=${POSTGRES_USER:-payiq_user}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-payiq_password}
+  #     - POSTGRES_HOST=db
+  #     - POSTGRES_PORT=5432
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - CELERY_RESULT_BACKEND=redis://redis:6379/0
+  #     - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
+  #   volumes:
+  #     - logs_data:/app/logs
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     celery-worker:
+  #       condition: service_started
+  #   networks:
+  #     - payiq_network
 
 volumes:
   postgres_data:
+  redis_data:
+  static_data:
+  logs_data:
 
+networks:
+  payiq_network:
+    driver: bridge

@@ -7,7 +7,7 @@ from django.db.models import Q
 from .models import Merchant, BankAccount
 from core.utils.multi_tenant import filter_by_user_merchants
 from .serializer import (
-    MerchantSerializer, 
+    MerchantSerializer,
     MerchantCreateSerializer,
     BankAccountSerializer,
 
@@ -17,6 +17,7 @@ from deposit.task import run_single_bot
 from payiq.celery import app
 from django.conf import settings
 import redis
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 # Connect to Redis
 redis_client = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
@@ -29,7 +30,13 @@ class MerchantListView(APIView):
     POST: Create a new merchant
     """
     permission_classes = [IsAuthenticated]
-    
+
+    @extend_schema(
+        tags=['Merchants'],
+        summary='List Merchants',
+        description='Get list of all merchants. Non-super_admin users only see merchants they have access to.',
+        responses={200: MerchantSerializer(many=True)}
+    )
     def get(self, request):
         """Get list of all merchants (excluding soft-deleted)"""
         merchants = Merchant.objects.filter(deleted_at=None)
@@ -43,7 +50,17 @@ class MerchantListView(APIView):
             'count': merchants.count(),
             'results': serializer.data
         }, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(
+        tags=['Merchants'],
+        summary='Create Merchant',
+        description='Create a new merchant. Only super_admin can create merchants.',
+        request=MerchantCreateSerializer,
+        responses={
+            201: MerchantSerializer,
+            403: OpenApiResponse(description='Only super_admin can create merchants'),
+        }
+    )
     def post(self, request):
         """Create a new merchant - Only super_admin can create merchants"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -69,13 +86,15 @@ class MerchantDetailView(APIView):
     DELETE: Delete a merchant (soft delete)
     """
     permission_classes = [IsAuthenticated]
-    
+
+    @extend_schema(tags=['Merchants'], summary='Get Merchant', responses={200: MerchantSerializer})
     def get(self, request, pk):
         """Get a specific merchant by ID"""
         merchant = get_object_or_404(Merchant, pk=pk)
         serializer = MerchantSerializer(merchant)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Merchants'], summary='Update Merchant (Full)', request=MerchantCreateSerializer, responses={200: MerchantSerializer})
     def put(self, request, pk):
         """Full update of a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -85,7 +104,8 @@ class MerchantDetailView(APIView):
         # Return full serializer with read-only fields
         response_serializer = MerchantSerializer(updated_merchant)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Merchants'], summary='Update Merchant (Partial)', request=MerchantCreateSerializer, responses={200: MerchantSerializer})
     def patch(self, request, pk):
         """Partial update of a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -95,7 +115,8 @@ class MerchantDetailView(APIView):
         # Return full serializer with read-only fields
         response_serializer = MerchantSerializer(updated_merchant)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Merchants'], summary='Delete Merchant', description='Soft delete a merchant')
     def delete(self, request, pk):
         """Soft delete a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -112,7 +133,17 @@ class BankAccountListView(APIView):
     POST: Create a new bank account
     """
     permission_classes = [IsAuthenticated]
-    
+
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='List Bank Accounts',
+        description='Get list of all bank accounts with optional filters.',
+        parameters=[
+            OpenApiParameter(name='nickname', description='Filter by nickname', required=False, type=str),
+            OpenApiParameter(name='upi_id', description='Filter by UPI ID', required=False, type=str),
+        ],
+        responses={200: BankAccountSerializer(many=True)}
+    )
     def get(self, request):
         """Get list of all bank accounts (excluding soft-deleted) with optional filters"""
         queryset = BankAccount.objects.filter(deleted_at=None)
@@ -134,7 +165,17 @@ class BankAccountListView(APIView):
             'count': queryset.count(),
             'results': serializer.data
         }, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='Create Bank Account',
+        description='Create a new bank account. Only admin/super_admin can create bank accounts.',
+        request=BankAccountCreateSerializer,
+        responses={
+            201: BankAccountSerializer,
+            403: OpenApiResponse(description='Permission denied'),
+        }
+    )
     def post(self, request):
         """Create a new bank account - Only super_admin can create bank accounts"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -160,13 +201,15 @@ class BankAccountDetailView(APIView):
     DELETE: Delete a bank account (soft delete)
     """
     permission_classes = [IsAuthenticated]
-    
+
+    @extend_schema(tags=['Bank Accounts'], summary='Get Bank Account', responses={200: BankAccountSerializer})
     def get(self, request, pk):
         """Get a specific bank account by ID"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
         serializer = BankAccountSerializer(bank_account)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Bank Accounts'], summary='Update Bank Account (Full)', request=BankAccountCreateSerializer, responses={200: BankAccountSerializer})
     def put(self, request, pk):
         """Full update of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -176,7 +219,8 @@ class BankAccountDetailView(APIView):
         # Return full serializer with read-only fields
         response_serializer = BankAccountSerializer(updated_bank_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Bank Accounts'], summary='Update Bank Account (Partial)', request=BankAccountCreateSerializer, responses={200: BankAccountSerializer})
     def patch(self, request, pk):
         """Partial update of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -186,7 +230,8 @@ class BankAccountDetailView(APIView):
         # Return full serializer with read-only fields
         response_serializer = BankAccountSerializer(updated_bank_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
-    
+
+    @extend_schema(tags=['Bank Accounts'], summary='Delete Bank Account', description='Soft delete a bank account')
     def delete(self, request, pk):
         """Soft delete a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -202,7 +247,13 @@ class BankAccountStatusUpdateView(APIView):
     PATCH: Update status fields (is_enabled, is_qr, is_bank, status)
     """
     permission_classes = [IsAuthenticated]
-    
+
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='Update Bank Account Status',
+        description='Update status fields (is_enabled, is_qr, is_bank, status, is_approved). Only super_admin can update is_approved.',
+        responses={200: BankAccountSerializer}
+    )
     def patch(self, request, pk):
         """Update status fields of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -242,6 +293,16 @@ class StartBotView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='Start Bot',
+        description='Start the bank automation bot for a specific bank account. Bot runs in continuous mode.',
+        responses={
+            200: OpenApiResponse(description='Bot started successfully'),
+            400: OpenApiResponse(description='Bot already running'),
+            503: OpenApiResponse(description='Celery workers not running'),
+        }
+    )
     def post(self, request, pk):
         bank_account = get_object_or_404(BankAccount, pk=pk)
         
@@ -306,6 +367,15 @@ class StopBotView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='Stop Bot',
+        description='Send stop signal to the bot. Bot will stop after current iteration completes.',
+        responses={
+            200: OpenApiResponse(description='Bot stop signal sent'),
+            400: OpenApiResponse(description='Bot not running'),
+        }
+    )
     def post(self, request, pk):
         bank_account = get_object_or_404(BankAccount, pk=pk)
         
@@ -358,6 +428,14 @@ class BotStatusView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Bank Accounts'],
+        summary='Get Bot Status',
+        description='Get bot running status for all bank accounts or a specific one.',
+        parameters=[
+            OpenApiParameter(name='account_id', description='Get status for specific account', required=False, type=int),
+        ]
+    )
     def get(self, request):
         """
         Get bot status for bank accounts.
