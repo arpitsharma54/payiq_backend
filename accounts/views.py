@@ -6,61 +6,49 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from .serializer import LoginSerializer, UserSerializer, UserCreateSerializer, UserUpdateStatusSerializer, UserUpdateSerializer, UserGeneralUpdateSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import CustomUser
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 
 class LoginView(APIView):
     """User login endpoint to obtain JWT tokens."""
     permission_classes = [AllowAny]
 
-    @extend_schema(
-        tags=['Authentication'],
-        summary='User Login',
-        description='Authenticate user and receive JWT access and refresh tokens.',
-        request=LoginSerializer,
-        responses={
-            200: OpenApiResponse(description='Login successful - returns JWT tokens and user info'),
-            400: OpenApiResponse(description='Invalid credentials or inactive account'),
-            500: OpenApiResponse(description='Server error during login'),
-        }
-    )
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
-        
+
         if not serializer.is_valid():
             # Return validation errors
             return Response(
                 serializer.errors,
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             user = serializer.validated_data['user']
-            
+
             # Check if user is active
             if not user.is_active:
                 return Response(
                     {'error': 'User account is inactive. Please contact administrator.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # Update last_login timestamp
             from django.utils import timezone
             user.last_login = timezone.now()
             user.save(update_fields=['last_login'])
-            
+
             token = RefreshToken.for_user(user)
-            
+
             # Serialize user data
             user_serializer = UserSerializer(user)
-            
+
             data = {
                 'refresh': str(token),
                 'access': str(token.access_token),
                 **user_serializer.data
             }
             return Response(data, status=status.HTTP_200_OK)
-            
+
         except KeyError:
             # User not found in validated_data (authentication failed)
             return Response(
@@ -78,33 +66,27 @@ class UserListView(APIView):
     """List all users"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Users'],
-        summary='List Users',
-        description='Get list of all users. Non-super_admin users only see users that share at least one merchant.',
-        responses={200: UserSerializer(many=True)}
-    )
     def get(self, request):
         """Get list of all users (excluding superusers)"""
         users = CustomUser.objects.filter(
             deleted_at=None,
             is_superuser=False
         )
-        
+
         # Filter by merchant access (multi-tenant)
         # If user is not super_admin, only show users that share at least one merchant
         user_role = request.user.role.lower() if request.user.role else ''
         if not (request.user.is_superuser or user_role == 'super_admin'):
             # Get current user's accessible merchant IDs
             current_user_merchant_ids = request.user.get_accessible_merchant_ids()
-            
+
             if current_user_merchant_ids:
                 # Filter users that have at least one merchant in common
                 users = users.filter(merchants__id__in=current_user_merchant_ids).distinct()
             else:
                 # User has no merchants, return empty queryset
                 users = users.none()
-        
+
         users = users.order_by('-id')
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -114,24 +96,13 @@ class UserCreateView(APIView):
     """Create a new user - Admin only"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Users'],
-        summary='Create User',
-        description='Create a new user. Only super_admin can create users. Cannot create super_admin users via API.',
-        request=UserCreateSerializer,
-        responses={
-            201: UserSerializer,
-            400: OpenApiResponse(description='Validation error'),
-            403: OpenApiResponse(description='Permission denied'),
-        }
-    )
     def post(self, request):
         """Create a new user"""
         # Check if user is admin or superuser
         user_role = request.user.role.lower() if request.user.role else ''
         is_superuser = request.user.is_superuser
         is_super_admin = user_role == 'super_admin'
-        
+
         if not (is_superuser or is_super_admin):
             user_role_display = request.user.role or 'None'
             return Response(
@@ -143,7 +114,7 @@ class UserCreateView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Prevent creating super_admin users through API
         requested_role = request.data.get('role', '').lower()
         if requested_role == 'super_admin':
@@ -156,7 +127,7 @@ class UserCreateView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         serializer = UserCreateSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
@@ -169,17 +140,6 @@ class UserUpdateStatusView(APIView):
     """Update user status (enabled/disabled) - Admin only"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Users'],
-        summary='Update User Status',
-        description='Enable or disable a user account. Only admin/super_admin can perform this action.',
-        request=UserUpdateStatusSerializer,
-        responses={
-            200: UserSerializer,
-            403: OpenApiResponse(description='Permission denied'),
-            404: OpenApiResponse(description='User not found'),
-        }
-    )
     def patch(self, request, user_id):
         """Update user is_active status"""
         # Check if user is admin, super_admin, or superuser
@@ -187,7 +147,7 @@ class UserUpdateStatusView(APIView):
         is_admin = user_role == 'admin'
         is_super_admin = user_role == 'super_admin'
         is_superuser = request.user.is_superuser
-        
+
         if not (is_admin or is_super_admin or is_superuser):
             return Response(
                 {
@@ -198,7 +158,7 @@ class UserUpdateStatusView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         try:
             user = CustomUser.objects.get(id=user_id, deleted_at=None)
         except CustomUser.DoesNotExist:
@@ -206,7 +166,7 @@ class UserUpdateStatusView(APIView):
                 {'error': 'User not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         serializer = UserUpdateStatusSerializer(user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -219,17 +179,6 @@ class UserUpdateView(APIView):
     """Update user information - Admin only"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Users'],
-        summary='Update User',
-        description='Update user information (full_name, role, merchants). Only admin/super_admin can perform this action.',
-        request=UserGeneralUpdateSerializer,
-        responses={
-            200: UserSerializer,
-            403: OpenApiResponse(description='Permission denied'),
-            404: OpenApiResponse(description='User not found'),
-        }
-    )
     def patch(self, request, user_id):
         """Update user information (general info or merchants)"""
         # Check if user is admin, super_admin, or superuser
@@ -237,7 +186,7 @@ class UserUpdateView(APIView):
         is_admin = user_role == 'admin'
         is_super_admin = user_role == 'super_admin'
         is_superuser = request.user.is_superuser
-        
+
         if not (is_admin or is_super_admin or is_superuser):
             return Response(
                 {
@@ -248,7 +197,7 @@ class UserUpdateView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         try:
             user = CustomUser.objects.get(id=user_id, deleted_at=None)
         except CustomUser.DoesNotExist:
@@ -256,14 +205,14 @@ class UserUpdateView(APIView):
                 {'error': 'User not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Check if only merchants are being updated (backward compatibility)
         if 'merchants' in request.data and len(request.data) == 1:
             serializer = UserUpdateSerializer(user, data=request.data, partial=True)
         else:
             # General update (full_name, email, role, merchants)
             serializer = UserGeneralUpdateSerializer(user, data=request.data, partial=True)
-        
+
         if serializer.is_valid():
             serializer.save()
             user_serializer = UserSerializer(user)

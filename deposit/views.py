@@ -24,7 +24,6 @@ import hashlib
 from datetime import timedelta, date
 from urllib.parse import urlencode
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 
 class PayinListView(APIView):
@@ -35,25 +34,13 @@ class PayinListView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Deposits'],
-        summary='List Payins',
-        description='Get list of all payins with optional filtering by ID, code, status, or merchant.',
-        parameters=[
-            OpenApiParameter(name='id', description='Filter by payin ID', required=False, type=int),
-            OpenApiParameter(name='code', description='Filter by payin code (partial match)', required=False, type=str),
-            OpenApiParameter(name='status', description='Filter by status', required=False, type=str, enum=['initiated', 'assigned', 'success', 'dropped', 'dispute', 'duplicate']),
-            OpenApiParameter(name='merchant', description='Filter by merchant ID', required=False, type=int),
-        ],
-        responses={200: PayinListSerializer(many=True)}
-    )
     def get(self, request):
         """Get list of all payins with optional filtering"""
         queryset = Payin.objects.all()
-        
+
         # Filter by user's accessible merchants (multi-tenant)
         queryset = filter_by_user_merchants(queryset, request.user, 'merchant')
-        
+
         # Filter by ID if provided
         payin_id = request.query_params.get('id', None)
         if payin_id:
@@ -63,17 +50,17 @@ class PayinListView(APIView):
                 return Response({
                     'error': 'Invalid ID format'
                 }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Filter by Code if provided
         code = request.query_params.get('code', None)
         if code:
             queryset = queryset.filter(code__icontains=code)
-        
+
         # Filter by status if provided
         status_filter = request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
-        
+
         # Filter by merchant if provided (must be in user's accessible merchants)
         merchant_id = request.query_params.get('merchant', None)
         if merchant_id:
@@ -92,23 +79,16 @@ class PayinListView(APIView):
                 return Response({
                     'error': 'Invalid merchant ID format'
                 }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Order by created_at descending (newest first)
         queryset = queryset.order_by('-created_at')
-        
+
         serializer = PayinListSerializer(queryset, many=True)
         return Response({
             'count': queryset.count(),
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(
-        tags=['Deposits'],
-        summary='Create Payin',
-        description='Create a new payin/deposit transaction.',
-        request=PayinCreateSerializer,
-        responses={201: PayinSerializer}
-    )
     def post(self, request):
         """Create a new payin (New Payment Link)"""
         serializer = PayinCreateSerializer(data=request.data)
@@ -129,14 +109,12 @@ class PayinDetailView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Deposits'], summary='Get Payin', responses={200: PayinSerializer})
     def get(self, request, pk):
         """Get a specific payin by ID"""
         payin = get_object_or_404(Payin, pk=pk)
         serializer = PayinSerializer(payin)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Deposits'], summary='Update Payin (Full)', request=PayinUpdateSerializer, responses={200: PayinSerializer})
     def put(self, request, pk):
         """Full update of a payin"""
         payin = get_object_or_404(Payin, pk=pk)
@@ -147,7 +125,6 @@ class PayinDetailView(APIView):
         response_serializer = PayinSerializer(updated_payin)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Deposits'], summary='Update Payin (Partial)', request=PayinUpdateSerializer, responses={200: PayinSerializer})
     def patch(self, request, pk):
         """Partial update of a payin"""
         payin = get_object_or_404(Payin, pk=pk)
@@ -158,7 +135,6 @@ class PayinDetailView(APIView):
         response_serializer = PayinSerializer(updated_payin)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Deposits'], summary='Delete Payin', description='Soft delete a payin')
     def delete(self, request, pk):
         """Soft delete a payin"""
         payin = get_object_or_404(Payin, pk=pk)
@@ -175,15 +151,14 @@ class PayinCheckStatusView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Deposits'], summary='Check Payin Status', description='Check and return the current status of a payin.')
     def post(self, request, pk):
         """Check the status of a payin"""
         payin = get_object_or_404(Payin, pk=pk)
-        
+
         # If status is success, ensure duration is calculated
         if payin.status == 'success':
             payin.calculate_duration()
-        
+
         serializer = PayinSerializer(payin)
         return Response({
             'id': payin.id,
@@ -205,11 +180,10 @@ class PayinResetView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Deposits'], summary='Reset Payin', description='Reset a payin to initiated status, clearing amounts and UTR.')
     def post(self, request, pk):
         """Reset a payin"""
         payin = get_object_or_404(Payin, pk=pk)
-        
+
         # Reset payin to initiated status
         payin.status = 'initiated'
         payin.confirmed_amount = 0
@@ -217,7 +191,7 @@ class PayinResetView(APIView):
         payin.user_submitted_utr = None
         payin.duration = None
         payin.save()
-        
+
         serializer = PayinSerializer(payin)
         return Response({
             'message': 'Payin reset successfully',
@@ -232,15 +206,14 @@ class PayinNotifyView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Deposits'], summary='Notify Payin', description='Send notification for a payin.')
     def post(self, request, pk):
         """Notify about a payin"""
         payin = get_object_or_404(Payin, pk=pk)
-        
+
         # In a real implementation, this would send notifications
         # For now, we'll just return a success message
         # You can integrate with email, SMS, or push notification services here
-        
+
         serializer = PayinSerializer(payin)
         return Response({
             'message': f'Notification sent for payin {payin.id}',
@@ -257,18 +230,10 @@ class PayinActionsView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Deposits'],
-        summary='Payin Actions',
-        description='Perform an action on a payin: check_status, reset, or notify.',
-        parameters=[
-            OpenApiParameter(name='action', location='path', description='Action to perform', required=True, type=str, enum=['check_status', 'reset', 'notify']),
-        ]
-    )
     def post(self, request, pk, action):
         """Perform an action on a payin"""
         payin = get_object_or_404(Payin, pk=pk)
-        
+
         if action == 'check_status':
             if payin.status == 'success':
                 payin.calculate_duration()
@@ -278,7 +243,7 @@ class PayinActionsView(APIView):
                 'status': payin.status,
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
-        
+
         elif action == 'reset':
             payin.status = 'initiated'
             payin.confirmed_amount = 0
@@ -292,7 +257,7 @@ class PayinActionsView(APIView):
                 'message': 'Payin reset successfully',
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
-        
+
         elif action == 'notify':
             serializer = PayinSerializer(payin)
             return Response({
@@ -300,7 +265,7 @@ class PayinActionsView(APIView):
                 'message': f'Notification sent for payin {payin.id}',
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
-        
+
         else:
             return Response({
                 'error': f'Invalid action: {action}. Valid actions are: check_status, reset, notify'
@@ -316,24 +281,6 @@ class PayinCreatePaymentLinkView(APIView):
     """
     permission_classes = [AllowAny]
 
-    @extend_schema(
-        tags=['Deposits'],
-        summary='Create Payment Link',
-        description='''Create a new payment link for a merchant.
-
-**Authentication:** Requires merchant API key via:
-- Header: `X-API-Key: <api_key>`
-- OR Body: `{"api_key": "<api_key>", ...}`''',
-        parameters=[
-            OpenApiParameter(name='X-API-Key', location='header', description='Merchant API key', required=False, type=str),
-        ],
-        responses={
-            201: OpenApiResponse(description='Payment link created successfully'),
-            400: OpenApiResponse(description='Missing required fields or no enabled bank accounts'),
-            401: OpenApiResponse(description='API key is required'),
-            403: OpenApiResponse(description='Invalid API key'),
-        }
-    )
     def post(self, request):
         """Create a new payment link - requires merchant API key"""
         # Extract API key from header or payload
@@ -361,21 +308,21 @@ class PayinCreatePaymentLinkView(APIView):
             return Response({
                 'error': 'User ID is a required field'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # 2. Check if merchant has at least one enabled bank account
         enabled_bank_accounts = merchant.bank_accounts.filter(
             status=True,
             deleted_at=None
         )
-        
+
         if not enabled_bank_accounts.exists():
             return Response({
                 'error': 'Cannot create payment link. No enabled bank accounts found for this merchant. Please enable at least one bank account first.'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Get the first enabled bank account
         bank_account = enabled_bank_accounts.first()
-        
+
         # Generate a unique code - keep trying until we find one that doesn't exist
         max_attempts = 100  # Safety limit to prevent infinite loops
         code = None
@@ -384,12 +331,12 @@ class PayinCreatePaymentLinkView(APIView):
             if not Payin.objects.filter(code=candidate_code).exists():
                 code = candidate_code
                 break
-        
+
         if code is None:
             return Response({
                 'error': 'Failed to generate unique code. Please try again.'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+
         # Set pay_amount from amount if provided, otherwise use 0
         pay_amount = request.data.get('amount') if request.data.get('amount') else None
         if pay_amount:
@@ -397,15 +344,15 @@ class PayinCreatePaymentLinkView(APIView):
                 pay_amount = Decimal(str(pay_amount))
             except (ValueError, TypeError):
                 pay_amount = Decimal('0.00')
-        
+
         # Generate payin_uuid first
         payin_uuid = uuid.uuid4()
-        
+
         # Generate signature (simple hash of sessionId + merchant API key)
         # In production, use a more secure signing mechanism
         sign_string = f"{payin_uuid}{merchant.api_key}"
         sign = hashlib.md5(sign_string.encode()).hexdigest()
-        
+
         try:
             deposit = Payin.objects.create(
                 code=code,
@@ -422,11 +369,11 @@ class PayinCreatePaymentLinkView(APIView):
             return Response({
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+
         # Generate payment URL with sessionId and sign
         frontend_base_url = os.getenv('FRONTEND_BASE_URL', 'http://localhost:5173')
         payment_url = f"{frontend_base_url}/payin?sessionId={payin_uuid}&sign={sign}"
-        
+
         return Response({
             'message': 'Payment link created successfully',
             'payment_link_url': payment_url,
@@ -438,6 +385,60 @@ class PayinCreatePaymentLinkView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+class PayinPublicCheckStatusView(APIView):
+    """
+    Public API view for checking payment status by payin_uuid or merchant_order_id.
+    Authentication: Requires merchant API key in header (X-API-Key) or query param (api_key).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        """Check payment status by payin_uuid or merchant_order_id"""
+        # Extract API key from header or query param
+        api_key = request.headers.get('X-API-Key') or request.query_params.get('api_key')
+
+        if not api_key:
+            return Response({
+                'error': 'API key is required. Provide it in X-API-Key header or api_key query parameter.'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        # Validate API key and get merchant
+        try:
+            merchant = Merchant.objects.get(api_key=api_key, deleted_at=None)
+        except Merchant.DoesNotExist:
+            return Response({
+                'error': 'Invalid API key'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Get query parameters
+        payin_uuid = request.query_params.get('payin_uuid')
+        merchant_order_id = request.query_params.get('merchant_order_id')
+
+        # At least one identifier must be provided
+        if not payin_uuid and not merchant_order_id:
+            return Response({
+                'error': 'At least one of payin_uuid or merchant_order_id is required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Find the payin
+        try:
+            if payin_uuid:
+                payin = Payin.objects.get(payin_uuid=payin_uuid, merchant=merchant)
+            else:
+                payin = Payin.objects.get(merchant_order_id=merchant_order_id, merchant=merchant)
+        except Payin.DoesNotExist:
+            return Response({
+                'error': 'Payment not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Payin.MultipleObjectsReturned:
+            # If multiple payins found with same merchant_order_id, get the most recent
+            payin = Payin.objects.filter(merchant_order_id=merchant_order_id, merchant=merchant).order_by('-created_at').first()
+
+        return Response({
+            'status': payin.status,
+        }, status=status.HTTP_200_OK)
+
+
 class PayinPublicSessionView(APIView):
     """
     Public API view for retrieving payment session details by sessionId (payin_uuid) and sign.
@@ -445,38 +446,23 @@ class PayinPublicSessionView(APIView):
     """
     permission_classes = [AllowAny]
 
-    @extend_schema(
-        tags=['Public Payment'],
-        summary='Get Payment Session',
-        description='Get payment session details by sessionId. No authentication required. Link expires after 10 minutes.',
-        parameters=[
-            OpenApiParameter(name='sessionId', description='Payment session UUID', required=True, type=str),
-            OpenApiParameter(name='sign', description='Signature for verification (optional)', required=False, type=str),
-        ],
-        responses={
-            200: OpenApiResponse(description='Payment session details with bank account info'),
-            400: OpenApiResponse(description='sessionId required'),
-            404: OpenApiResponse(description='Payment session not found'),
-            410: OpenApiResponse(description='Payment link expired'),
-        }
-    )
     def get(self, request):
         """Get payment session details by sessionId and sign"""
         session_id = request.query_params.get('sessionId')
         sign = request.query_params.get('sign')
-        
+
         if not session_id:
             return Response({
                 'error': 'sessionId is required'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             payin = Payin.objects.get(payin_uuid=session_id)
         except Payin.DoesNotExist:
             return Response({
                 'error': 'Payment session not found'
             }, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Check if payment link has expired (10 minutes from creation)
         if payin.created_at:
             expiry_time = payin.created_at + timedelta(minutes=10)
@@ -486,16 +472,16 @@ class PayinPublicSessionView(APIView):
                     'error': 'Payment link has expired. Please request a new payment link.',
                     'expired': True
                 }, status=status.HTTP_410_GONE)
-        
+
         # Update status from 'initiated' to 'assigned' when payment link is opened
         if payin.status == 'initiated':
             payin.status = 'assigned'
             payin.assigned_at = timezone.now()
             payin.save(update_fields=['status', 'assigned_at'])
-        
+
         # Get the associated bank account
         bank_account = None
-        
+
         # First, try to find bank account by nickname or account holder name if payin.bank is set
         if payin.bank:
             bank_account = payin.merchant.bank_accounts.filter(
@@ -503,27 +489,27 @@ class PayinPublicSessionView(APIView):
                 status=True,
                 deleted_at=None
             ).first()
-        
+
         # If not found or payin.bank is not set, fallback to any enabled bank account
         if not bank_account:
             bank_account = payin.merchant.bank_accounts.filter(
                 status=True,
                 deleted_at=None
             ).first()
-        
+
         # If still no bank account found, return an error
         if not bank_account:
             return Response({
                 'error': 'No enabled bank account found for this merchant. Please contact support.',
                 'merchant_name': payin.merchant.name
             }, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Calculate expiry time (10 minutes from creation)
         expiry_timestamp = None
         if payin.created_at:
             expiry_time = payin.created_at + timedelta(minutes=10)
             expiry_timestamp = expiry_time.isoformat()
-        
+
         # Prepare response data
         response_data = {
             'session_id': str(payin.payin_uuid),
@@ -538,7 +524,7 @@ class PayinPublicSessionView(APIView):
             'upi_available': False,
             'bank_transfer_available': False,
         }
-        
+
         if bank_account:
             response_data['bank_account'] = {
                 'nickname': bank_account.nickname,
@@ -551,38 +537,27 @@ class PayinPublicSessionView(APIView):
             }
             response_data['upi_available'] = bank_account.is_qr or bank_account.is_intent
             response_data['bank_transfer_available'] = bank_account.is_bank
-        
+
         return Response(response_data, status=status.HTTP_200_OK)
 
-    @extend_schema(
-        tags=['Public Payment'],
-        summary='Submit Payment Details',
-        description='Submit UTR and/or screenshot for a payment session. No authentication required.',
-        responses={
-            200: OpenApiResponse(description='Payment details submitted successfully'),
-            400: OpenApiResponse(description='sessionId required'),
-            404: OpenApiResponse(description='Payment session not found'),
-            410: OpenApiResponse(description='Payment link expired'),
-        }
-    )
     def post(self, request):
         """Submit UTR and/or screenshot for payment"""
         session_id = request.data.get('sessionId')
         utr = request.data.get('utr')
         screenshot = request.FILES.get('screenshot')
-        
+
         if not session_id:
             return Response({
                 'error': 'sessionId is required'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             payin = Payin.objects.get(payin_uuid=session_id)
         except Payin.DoesNotExist:
             return Response({
                 'error': 'Payment session not found'
             }, status=status.HTTP_404_NOT_FOUND)
-        
+
         # Check if payment link has expired (10 minutes from creation)
         if payin.created_at:
             expiry_time = payin.created_at + timedelta(minutes=10)
@@ -592,19 +567,19 @@ class PayinPublicSessionView(APIView):
                     'error': 'Payment link has expired. Please request a new payment link.',
                     'expired': True
                 }, status=status.HTTP_410_GONE)
-        
+
         # Update UTR if provided
         if utr:
             payin.user_submitted_utr = utr
             payin.save(update_fields=['user_submitted_utr'])
-        
+
         # Handle screenshot upload if provided
         # Note: You may want to save the screenshot file to a storage service
         if screenshot:
             # For now, we'll just acknowledge receipt
             # In production, save to S3 or similar storage
             pass
-        
+
         # Build callback URL with parameters
         callback_url = None
         if payin.merchant.callback_url:
@@ -618,11 +593,11 @@ class PayinPublicSessionView(APIView):
             # Add merchant_order_id if available
             if hasattr(payin, 'merchant_order_id') and payin.merchant_order_id:
                 callback_params['merchant_order_id'] = str(payin.merchant_order_id)
-            
+
             # Build URL with query parameters
             separator = '&' if '?' in payin.merchant.callback_url else '?'
             callback_url = f"{payin.merchant.callback_url}{separator}{urlencode(callback_params)}"
-        
+
         return Response({
             'message': 'Payment details submitted successfully',
             'session_id': str(payin.payin_uuid),
@@ -638,36 +613,27 @@ class DashboardView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Dashboard'],
-        summary='Get Dashboard Statistics',
-        description='Get dashboard statistics including deposits, withdrawals, commissions, and chart data.',
-        parameters=[
-            OpenApiParameter(name='merchant_codes', description='Filter by merchant codes (can be repeated)', required=False, type=str),
-            OpenApiParameter(name='time_range', description='Time range for data', required=False, type=str, enum=['12H', '7D', '15D'], default='7D'),
-        ]
-    )
     def get(self, request):
         """Get dashboard statistics"""
         # Get user's accessible merchants
         merchant_ids = request.user.get_accessible_merchant_ids()
         user_role = request.user.role.lower() if request.user.role else ''
         is_super_admin = request.user.is_superuser or user_role == 'super_admin'
-        
+
         # Base queryset - filter by accessible merchants
         if is_super_admin:
             payins_queryset = Payin.objects.all()
         else:
             payins_queryset = Payin.objects.filter(merchant_id__in=merchant_ids)
-        
+
         # Get query parameters
         merchant_codes = request.query_params.getlist('merchant_codes', [])
         time_range = request.query_params.get('time_range', '7D')  # 12H, 7D, 15D
-        
+
         # Filter by merchant codes if provided
         if merchant_codes:
             payins_queryset = payins_queryset.filter(merchant__code__in=merchant_codes)
-        
+
         # Calculate time range
         now = timezone.now()
         if time_range == '12H':
@@ -676,65 +642,65 @@ class DashboardView(APIView):
             start_time = now - timedelta(days=15)
         else:  # Default to 7D
             start_time = now - timedelta(days=7)
-        
+
         # Filter by time range
         payins_queryset = payins_queryset.filter(created_at__gte=start_time)
-        
+
         # Calculate metrics
         # Total deposits (success status)
         success_payins = payins_queryset.filter(status='success')
         total_deposits = success_payins.aggregate(
             total=Sum('confirmed_amount', default=Decimal('0.00'))
         )['total'] or Decimal('0.00')
-        
+
         # Deposit count
         deposit_count = success_payins.count()
-        
+
         # Deposit percentage (calculate commission)
         total_deposits_with_commission = success_payins.aggregate(
             total=Sum(F('confirmed_amount') * F('merchant__payin_commission') / 100, output_field=DecimalField())
         )['total'] or Decimal('0.00')
-        
+
         # All-time totals for summary
         all_time_success = Payin.objects.filter(status='success')
         if not is_super_admin:
             all_time_success = all_time_success.filter(merchant_id__in=merchant_ids)
         if merchant_codes:
             all_time_success = all_time_success.filter(merchant__code__in=merchant_codes)
-        
+
         all_time_deposits = all_time_success.aggregate(
             total=Sum('confirmed_amount', default=Decimal('0.00'))
         )['total'] or Decimal('0.00')
-        
+
         all_time_commission = all_time_success.aggregate(
             total=Sum(F('confirmed_amount') * F('merchant__payin_commission') / 100, output_field=DecimalField())
         )['total'] or Decimal('0.00')
-        
+
         # Withdrawals (currently not implemented, return 0)
         total_withdrawals = Decimal('0.00')
         withdrawal_count = 0
         withdrawal_percentage = Decimal('0.00')
-        
+
         # Settlement (deposits - commission)
         settlement = Settlement.objects.filter(merchant__in=merchant_ids, status='success').aggregate(settlement=Sum('amount'))['settlement']
         if not settlement:
             settlement = 0
         # Net Balance (settlement - withdrawals)
         net_balance = (total_deposits - settlement) - all_time_commission
-        
+
         # Generate chart data based on time range
         chart_data = []
-        
+
         if time_range == '12H':
             # For 12H, show hourly data for the last 12 hours (IST)
             # Ensure current time is in IST (timezone.now() returns timezone-aware datetime)
             current_time_ist = timezone.localtime(now)
             # Round current time to nearest hour
             current_time = current_time_ist.replace(minute=0, second=0, microsecond=0)
-            
+
             # Calculate start time (12 hours ago)
             start_time = current_time - timedelta(hours=11)  # 11 hours back + current hour = 12 hours
-            
+
             # Get hourly deposits within the last 12 hours
             hourly_deposits = success_payins.filter(
                 created_at__gte=start_time
@@ -744,7 +710,7 @@ class DashboardView(APIView):
                 amount=Sum('confirmed_amount'),
                 count=Count('id')
             ).order_by('hour')
-            
+
             # Create a dictionary of actual data by hour
             # Use a normalized hour string as key for matching
             data_by_hour = {}
@@ -755,14 +721,14 @@ class DashboardView(APIView):
                 if hasattr(hour_dt, 'tzinfo') and hour_dt.tzinfo is not None:
                     hour_dt = timezone.localtime(hour_dt)
                     hour_dt = hour_dt.replace(tzinfo=None)
-                
+
                 # Use hour as key (YYYY-MM-DD HH:00:00 format)
                 hour_key = hour_dt.strftime('%Y-%m-%d %H:00:00')
                 data_by_hour[hour_key] = {
                     'amount': float(item['amount']),
                     'count': item['count']
                 }
-            
+
             # Generate all hours in the last 12 hours (from 11 hours ago to current hour)
             # current_time is already in IST and naive
             for i in range(11, -1, -1):  # Go from 11 hours ago to current hour
@@ -778,14 +744,14 @@ class DashboardView(APIView):
             # For 7D or 15D, show daily data
             # Ensure we're working in IST
             now_ist = timezone.localtime(now)
-            
+
             daily_deposits = success_payins.annotate(
                 date=TruncDate('created_at')
             ).values('date').annotate(
                 amount=Sum('confirmed_amount'),
                 count=Count('id')
             ).order_by('date')
-            
+
             # Create a dictionary of actual data by date
             data_by_date = {}
             for item in daily_deposits:
@@ -797,19 +763,19 @@ class DashboardView(APIView):
                     if hasattr(date_dt, 'tzinfo') and date_dt.tzinfo is not None:
                         date_dt = timezone.localtime(date_dt)
                     date_dt = date_dt.date() if hasattr(date_dt, 'date') else date_dt
-                
+
                 date_str = date_dt.strftime('%Y-%m-%d')
                 amount_value = float(item['amount']) if item['amount'] is not None else 0.0
                 data_by_date[date_str] = {
                     'amount': amount_value,
                     'count': item['count']
                 }
-            
+
             # Generate all dates in the range (using IST)
             days = 7 if time_range == '7D' else 15
             start_date = (now_ist - timedelta(days=days-1)).date()
             end_date = now_ist.date()
-            
+
             current_date = start_date
             while current_date <= end_date:
                 date_str = current_date.strftime('%Y-%m-%d')
@@ -821,7 +787,7 @@ class DashboardView(APIView):
                     'count': count
                 })
                 current_date += timedelta(days=1)
-        
+
         return Response({
             'deposits': {
                 'total': str(total_deposits),

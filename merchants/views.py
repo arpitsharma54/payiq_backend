@@ -17,7 +17,6 @@ from deposit.task import run_single_bot
 from payiq.celery import app
 from django.conf import settings
 import redis
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 # Connect to Redis
 redis_client = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
@@ -31,12 +30,6 @@ class MerchantListView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Merchants'],
-        summary='List Merchants',
-        description='Get list of all merchants. Non-super_admin users only see merchants they have access to.',
-        responses={200: MerchantSerializer(many=True)}
-    )
     def get(self, request):
         """Get list of all merchants (excluding soft-deleted)"""
         merchants = Merchant.objects.filter(deleted_at=None)
@@ -51,16 +44,6 @@ class MerchantListView(APIView):
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(
-        tags=['Merchants'],
-        summary='Create Merchant',
-        description='Create a new merchant. Only super_admin can create merchants.',
-        request=MerchantCreateSerializer,
-        responses={
-            201: MerchantSerializer,
-            403: OpenApiResponse(description='Only super_admin can create merchants'),
-        }
-    )
     def post(self, request):
         """Create a new merchant - Only super_admin can create merchants"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -68,7 +51,7 @@ class MerchantListView(APIView):
             return Response({
                 'error': 'Only super_admin can create merchants'
             }, status=status.HTTP_403_FORBIDDEN)
-        
+
         serializer = MerchantCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         merchant = serializer.save()
@@ -87,14 +70,12 @@ class MerchantDetailView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Merchants'], summary='Get Merchant', responses={200: MerchantSerializer})
     def get(self, request, pk):
         """Get a specific merchant by ID"""
         merchant = get_object_or_404(Merchant, pk=pk)
         serializer = MerchantSerializer(merchant)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Merchants'], summary='Update Merchant (Full)', request=MerchantCreateSerializer, responses={200: MerchantSerializer})
     def put(self, request, pk):
         """Full update of a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -105,7 +86,6 @@ class MerchantDetailView(APIView):
         response_serializer = MerchantSerializer(updated_merchant)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Merchants'], summary='Update Merchant (Partial)', request=MerchantCreateSerializer, responses={200: MerchantSerializer})
     def patch(self, request, pk):
         """Partial update of a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -116,7 +96,6 @@ class MerchantDetailView(APIView):
         response_serializer = MerchantSerializer(updated_merchant)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Merchants'], summary='Delete Merchant', description='Soft delete a merchant')
     def delete(self, request, pk):
         """Soft delete a merchant"""
         merchant = get_object_or_404(Merchant, pk=pk)
@@ -134,48 +113,28 @@ class BankAccountListView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='List Bank Accounts',
-        description='Get list of all bank accounts with optional filters.',
-        parameters=[
-            OpenApiParameter(name='nickname', description='Filter by nickname', required=False, type=str),
-            OpenApiParameter(name='upi_id', description='Filter by UPI ID', required=False, type=str),
-        ],
-        responses={200: BankAccountSerializer(many=True)}
-    )
     def get(self, request):
         """Get list of all bank accounts (excluding soft-deleted) with optional filters"""
         queryset = BankAccount.objects.filter(deleted_at=None)
-        
+
         # Filter by user's accessible merchants (multi-tenant)
         queryset = filter_by_user_merchants(queryset, request.user, 'merchant')
-        
+
         # Apply filters
         nickname = request.query_params.get('nickname', '').strip()
         upi_id = request.query_params.get('upi_id', '').strip()
-        
+
         if nickname:
             queryset = queryset.filter(nickname__icontains=nickname)
         if upi_id:
             queryset = queryset.filter(upi_id__icontains=upi_id)
-        
+
         serializer = BankAccountSerializer(queryset, many=True)
         return Response({
             'count': queryset.count(),
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='Create Bank Account',
-        description='Create a new bank account. Only admin/super_admin can create bank accounts.',
-        request=BankAccountCreateSerializer,
-        responses={
-            201: BankAccountSerializer,
-            403: OpenApiResponse(description='Permission denied'),
-        }
-    )
     def post(self, request):
         """Create a new bank account - Only super_admin can create bank accounts"""
         user_role = request.user.role.lower() if request.user.role else ''
@@ -183,7 +142,7 @@ class BankAccountListView(APIView):
             return Response({
                 'error': 'Only super_admin can create bank accounts'
             }, status=status.HTTP_403_FORBIDDEN)
-        
+
         serializer = BankAccountCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         bank_account = serializer.save()
@@ -202,14 +161,12 @@ class BankAccountDetailView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Bank Accounts'], summary='Get Bank Account', responses={200: BankAccountSerializer})
     def get(self, request, pk):
         """Get a specific bank account by ID"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
         serializer = BankAccountSerializer(bank_account)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Bank Accounts'], summary='Update Bank Account (Full)', request=BankAccountCreateSerializer, responses={200: BankAccountSerializer})
     def put(self, request, pk):
         """Full update of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -220,7 +177,6 @@ class BankAccountDetailView(APIView):
         response_serializer = BankAccountSerializer(updated_bank_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Bank Accounts'], summary='Update Bank Account (Partial)', request=BankAccountCreateSerializer, responses={200: BankAccountSerializer})
     def patch(self, request, pk):
         """Partial update of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -231,7 +187,6 @@ class BankAccountDetailView(APIView):
         response_serializer = BankAccountSerializer(updated_bank_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['Bank Accounts'], summary='Delete Bank Account', description='Soft delete a bank account')
     def delete(self, request, pk):
         """Soft delete a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -248,12 +203,6 @@ class BankAccountStatusUpdateView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='Update Bank Account Status',
-        description='Update status fields (is_enabled, is_qr, is_bank, status, is_approved). Only super_admin can update is_approved.',
-        responses={200: BankAccountSerializer}
-    )
     def patch(self, request, pk):
         """Update status fields of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -272,11 +221,11 @@ class BankAccountStatusUpdateView(APIView):
             return Response({
                 'error': 'No valid status fields provided'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # If enabling this account, ensure merchant is included in update_data for validation
         if 'is_enabled' in update_data and update_data['is_enabled']:
             update_data['merchant'] = bank_account.merchant_id
-        
+
         serializer = BankAccountCreateSerializer(bank_account, data=update_data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_bank_account = serializer.save()
@@ -293,19 +242,9 @@ class StartBotView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='Start Bot',
-        description='Start the bank automation bot for a specific bank account. Bot runs in continuous mode.',
-        responses={
-            200: OpenApiResponse(description='Bot started successfully'),
-            400: OpenApiResponse(description='Bot already running'),
-            503: OpenApiResponse(description='Celery workers not running'),
-        }
-    )
     def post(self, request, pk):
         bank_account = get_object_or_404(BankAccount, pk=pk)
-        
+
         # Check if already running
         lock_key = f'celery_task_run_bot_lock_{pk}'
         if redis_client.get(lock_key):
@@ -349,10 +288,10 @@ class StartBotView(APIView):
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Could not send WebSocket status update: {str(e)}")
-        
+
         # Trigger task
         task = run_single_bot.delay(pk)
-        
+
         return Response({
             'message': f'Bot started successfully in continuous mode (interval: {getattr(settings, "BOT_EXECUTION_INTERVAL", 60)}s)',
             'task_id': task.id,
@@ -367,31 +306,22 @@ class StopBotView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='Stop Bot',
-        description='Send stop signal to the bot. Bot will stop after current iteration completes.',
-        responses={
-            200: OpenApiResponse(description='Bot stop signal sent'),
-            400: OpenApiResponse(description='Bot not running'),
-        }
-    )
     def post(self, request, pk):
         bank_account = get_object_or_404(BankAccount, pk=pk)
-        
+
         # Get task ID from lock
         lock_key = f'celery_task_run_bot_lock_{pk}'
         stop_flag_key = f'bot_stop_flag_{pk}'
         task_id = redis_client.get(lock_key)
-        
+
         if not task_id:
             return Response({
                 'message': 'Bot is not running for this account'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Set stop flag to signal the continuous loop to stop
         redis_client.set(stop_flag_key, '1', ex=300)  # Expires in 5 minutes as safety
-        
+
         # Send status update via WebSocket before stopping
         try:
             from channels.layers import get_channel_layer
@@ -411,11 +341,11 @@ class StopBotView(APIView):
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Could not send WebSocket status update: {str(e)}")
-        
+
         # Try graceful stop first (let current iteration finish)
         # The task will check the stop flag and exit the loop
         # If task doesn't stop within reasonable time, we can revoke it
-        
+
         return Response({
             'message': 'Bot stop signal sent. Bot will stop after current iteration completes.'
         }, status=status.HTTP_200_OK)
@@ -428,14 +358,6 @@ class BotStatusView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        tags=['Bank Accounts'],
-        summary='Get Bot Status',
-        description='Get bot running status for all bank accounts or a specific one.',
-        parameters=[
-            OpenApiParameter(name='account_id', description='Get status for specific account', required=False, type=int),
-        ]
-    )
     def get(self, request):
         """
         Get bot status for bank accounts.
@@ -443,7 +365,7 @@ class BotStatusView(APIView):
         - account_id (optional): Get status for specific account. If not provided, returns all.
         """
         account_id = request.query_params.get('account_id')
-        
+
         if account_id:
             try:
                 pk = int(account_id)
@@ -451,14 +373,14 @@ class BotStatusView(APIView):
                 return Response({
                     'error': 'Invalid account_id parameter'
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
+
             # Get status for specific bank account
             bank_account = get_object_or_404(BankAccount, pk=pk)
             lock_key = f'celery_task_run_bot_lock_{pk}'
             task_id = redis_client.get(lock_key)
-            
+
             is_running = task_id is not None
-            
+
             # Check if task is actually active in Celery
             status_detail = 'idle'
             if is_running:
@@ -484,7 +406,7 @@ class BotStatusView(APIView):
                 except Exception:
                     # If inspection fails, assume running if lock exists
                     status_detail = 'running' if is_running else 'idle'
-            
+
             return Response({
                 'bank_account_id': pk,
                 'is_running': is_running,
@@ -495,7 +417,7 @@ class BotStatusView(APIView):
             # Get status for all accessible bank accounts
             queryset = BankAccount.objects.filter(deleted_at=None)
             queryset = filter_by_user_merchants(queryset, request.user, 'merchant')
-            
+
             statuses = {}
             try:
                 inspect = app.control.inspect()
@@ -506,23 +428,23 @@ class BotStatusView(APIView):
                         active_task_ids.add(task.get('id'))
             except Exception:
                 active_task_ids = set()
-            
+
             for account in queryset:
                 lock_key = f'celery_task_run_bot_lock_{account.id}'
                 task_id = redis_client.get(lock_key)
                 is_running = task_id is not None and task_id in active_task_ids
-                
+
                 # Clean up stale locks
                 if task_id and task_id not in active_task_ids:
                     redis_client.delete(lock_key)
                     is_running = False
-                
+
                 statuses[account.id] = {
                     'is_running': is_running,
                     'status': 'running' if is_running else 'idle',
                     'task_id': task_id if is_running else None
                 }
-            
+
             return Response({
                 'statuses': statuses
             }, status=status.HTTP_200_OK)

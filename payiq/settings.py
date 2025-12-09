@@ -46,7 +46,6 @@ INSTALLED_APPS = [
     'channels',
     'corsheaders',
     'rest_framework',
-    'drf_spectacular',
     'accounts',
     'merchants',
     'deposit',
@@ -136,58 +135,6 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
     'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-}
-
-# DRF Spectacular (OpenAPI/Redoc) Configuration
-SPECTACULAR_SETTINGS = {
-    'TITLE': 'PayIQ Backend API',
-    'DESCRIPTION': '''
-## PayIQ Payment Processing API
-
-PayIQ is a comprehensive payment processing platform that handles:
-- **Deposits (Payins)**: Accept payments from customers via UPI and bank transfers
-- **Settlements (Payouts)**: Process withdrawals to merchant bank accounts
-- **Merchant Management**: Multi-tenant merchant configuration
-- **Bank Account Management**: Automated bank account monitoring with bot support
-
-### Authentication
-All endpoints (except public payment sessions) require JWT Bearer token authentication.
-
-```
-Authorization: Bearer <access_token>
-```
-
-### User Roles
-- **super_admin**: Full system access to all merchants and features
-- **admin**: Can manage users, merchants, and settlements for assigned merchants
-
-### Multi-Tenant Support
-Non-super-admin users only have access to merchants they are assigned to.
-    ''',
-    'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
-    'COMPONENT_SPLIT_REQUEST': True,
-    'TAGS': [
-        {'name': 'Authentication', 'description': 'User login and token management'},
-        {'name': 'Users', 'description': 'User management operations'},
-        {'name': 'Merchants', 'description': 'Merchant configuration and management'},
-        {'name': 'Bank Accounts', 'description': 'Bank account management and bot control'},
-        {'name': 'Deposits', 'description': 'Payment deposits (payins) management'},
-        {'name': 'Public Payment', 'description': 'Public payment session endpoints (no auth required)'},
-        {'name': 'Dashboard', 'description': 'Analytics and statistics'},
-        {'name': 'Settlement Accounts', 'description': 'Settlement account configuration'},
-        {'name': 'Settlements', 'description': 'Settlement/payout transactions'},
-    ],
-    'SWAGGER_UI_SETTINGS': {
-        'deepLinking': True,
-        'persistAuthorization': True,
-        'displayOperationId': False,
-    },
-    'REDOC_UI_SETTINGS': {
-        'hideDownloadButton': False,
-        'expandResponses': '200,201',
-    },
 }
 
 # Bot execution interval in seconds (how often bot runs when started)
