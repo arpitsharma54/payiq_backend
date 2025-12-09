@@ -9,6 +9,7 @@ from .views import (
     PayinActionsView,
     PayinCreatePaymentLinkView,
     PayinPublicSessionView,
+    PayinPublicCheckStatusView,
 )
 
 urlpatterns = [
@@ -21,6 +22,9 @@ urlpatterns = [
     
     # Create payment link
     path('create-payment-link/', PayinCreatePaymentLinkView.as_view(), name='payin-create-payment-link'),
+
+    # Check payment status (public API with API key auth)
+    path('check-status/', PayinPublicCheckStatusView.as_view(), name='payin-public-check-status'),
     
     # Payin detail, update, delete (must come before list to avoid matching)
     path('<int:pk>/', PayinDetailView.as_view(), name='payin-detail'),
