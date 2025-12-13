@@ -12,8 +12,10 @@ from .serializer import (
     PayinSerializer,
     PayinCreateSerializer,
     PayinUpdateSerializer,
-    PayinListSerializer
+    PayinListSerializer,
+    ExtractedTransactionSerializer
 )
+from merchants.models import ExtractedTransactions
 from settlements.models import Settlement
 import random
 import string
@@ -813,4 +815,67 @@ class DashboardView(APIView):
                 'total_count': deposit_count,
                 'data': chart_data
             }
+        }, status=status.HTTP_200_OK)
+
+
+class QueuedTransactionsView(APIView):
+    """
+    API view for listing queued (unused) extracted transactions.
+    GET: List all extracted transactions with is_used=False
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Get list of queued (unused) extracted transactions"""
+        # Get base queryset - only unused transactions
+        queryset = ExtractedTransactions.objects.filter(is_used=False, deleted_at=None)
+
+        # Filter by user's accessible merchants (multi-tenant)
+        # Get merchant IDs that the user can access
+        user_role = request.user.role.lower() if request.user.role else ''
+        is_super_admin = request.user.is_superuser or user_role == 'super_admin'
+
+        if not is_super_admin:
+            merchant_ids = request.user.get_accessible_merchant_ids()
+            # Filter by bank accounts that belong to accessible merchants
+            queryset = queryset.filter(bank_account__merchant_id__in=merchant_ids)
+
+        # Filter by ID if provided
+        transaction_id = request.query_params.get('id', None)
+        if transaction_id:
+            try:
+                queryset = queryset.filter(id=int(transaction_id))
+            except ValueError:
+                return Response({
+                    'error': 'Invalid ID format'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Filter by UTR if provided
+        utr = request.query_params.get('utr', None)
+        if utr:
+            queryset = queryset.filter(utr__icontains=utr)
+
+        # Filter by amount if provided
+        amount = request.query_params.get('amount', None)
+        if amount:
+            try:
+                queryset = queryset.filter(amount=int(amount))
+            except ValueError:
+                pass
+
+        # Filter by bank account if provided
+        bank_account_id = request.query_params.get('bank_account', None)
+        if bank_account_id:
+            try:
+                queryset = queryset.filter(bank_account_id=int(bank_account_id))
+            except ValueError:
+                pass
+
+        # Order by created_at descending (newest first)
+        queryset = queryset.order_by('-created_at')
+
+        serializer = ExtractedTransactionSerializer(queryset, many=True)
+        return Response({
+            'count': queryset.count(),
+            'results': serializer.data
         }, status=status.HTTP_200_OK)

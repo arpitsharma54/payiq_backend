@@ -4,12 +4,12 @@ djangorestframework-simplejwt==5.5.1
 psycopg2-binary==2.9.11
 python-dotenv==1.2.1
 django-cors-headers==4.3.1
-paddleocr==3.3.2
+easyocr==1.7.2
 celery==5.5.3
 redis==7.1.0
-paddlepaddle==3.2.2
 playwright==1.56.0
 channels==4.3.2
 channels-redis==4.3.0
 daphne==4.2.1
 whitenoise==6.11.0
+pandas==2.3.3

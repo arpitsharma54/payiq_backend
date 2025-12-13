@@ -5,16 +5,41 @@ import pandas as pd
 from deposit.models import Payin
 from playwright.async_api import async_playwright
 import base64
-from paddleocr import PaddleOCR
+import easyocr
 from merchants.models import BankAccount, ExtractedTransactions
 from asgiref.sync import sync_to_async, async_to_sync
 logger = logging.getLogger(__name__)
 from django.db import transaction
 from django.utils import timezone
+from django.conf import settings
 from channels.layers import get_channel_layer
+import redis
 
 # Initialize once per Celery worker
-OCR_MODEL = PaddleOCR(use_textline_orientation=True, lang='en')
+OCR_MODEL = easyocr.Reader(['en'], gpu=False)
+
+# Redis client for checking stop flag
+redis_client = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
+
+
+class BotStoppedException(Exception):
+    """Exception raised when bot is stopped by user."""
+    pass
+
+
+def check_stop_flag(bank_account_id: int) -> bool:
+    """Check if stop flag is set for the given bank account."""
+    stop_flag_key = f'bot_stop_flag_{bank_account_id}'
+    return redis_client.get(stop_flag_key) is not None
+
+
+async def check_stop_and_raise(bank_account_id: int, send_status=None):
+    """Check stop flag and raise exception if set."""
+    if check_stop_flag(bank_account_id):
+        logger.info(f"Stop flag detected for bank account {bank_account_id}. Stopping bot immediately.")
+        if send_status:
+            await send_status('stopped', 'Bot stopped by user request')
+        raise BotStoppedException(f"Bot stopped by user request for account {bank_account_id}")
 
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
     channel_layer = get_channel_layer()
@@ -243,7 +268,10 @@ async def run_bot_for_account(bank_account_id: int):
 
         await send_status('running', "Starting bot for bank account")
         logger.info(f"Starting bot for bank account: {bank_account.nickname} (ID: {bank_account_id})")
-        
+
+        # Check stop flag before starting
+        await check_stop_and_raise(bank_account_id, send_status)
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
@@ -314,6 +342,8 @@ async def run_bot_for_account(bank_account_id: int):
                     )
                     logger.info('Page loaded successfully')
                     await send_status('running', 'Page loaded successfully')
+                    # Check stop flag after navigation
+                    await check_stop_and_raise(bank_account_id, send_status)
                 except Exception as e:
                     logger.warning(f'Navigation error: {e}')
                     await send_status('error', f'Navigation error: {e}')
@@ -325,88 +355,187 @@ async def run_bot_for_account(bank_account_id: int):
                     )
                     await asyncio.sleep(3)  # Wait for page to fully load
                 
-                # Fill in login credentials from bank account
-                await send_status('running', 'Filling in login credentials')
+                # Get login credentials from bank account
                 username = bank_account.username or ''
                 username2 = bank_account.username2 or ''
                 password = bank_account.password or ''
 
-                # Corporate login uses loginsubmit_loginId and loginsubmit_userId
-                if bank_account.login_type == 'corp':
-                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_loginId').value = '{username}'; }}")
-                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_userId').value = '{username2}'; }}")
-                else:
-                    # Normal login - just use userId
-                    await page.evaluate(f"() => {{ document.getElementById('loginsubmit_userId').value = '{username}'; }}")
+                # Captcha retry loop - credentials will be filled inside the loop after page stabilization
+                max_captcha_retries = 10
+                captcha_attempt = 0
+                login_successful = False
 
-                await page.evaluate(f"() => {{ document.getElementById('password').value = '{password}'; }}")
-                await send_status('running', 'getting captcha image')
-                # Extract captcha image
-                src = await page.evaluate('document.getElementById("captchaimg").src')
-                logger.debug(f'Captcha image source: {src}')
-                
-                # Decode base64
-                img_bytes = base64.b64decode(src.replace('data:image/png;base64,', ''))
-                
-                # Save to file (use unique filename per bank account)
-                img_path = f"core/bot/decoded_image_{bank_account_id}.png"
-                with open(img_path, "wb") as f:
-                    f.write(img_bytes)
-                
-                logger.info(f"Saved captcha image to {img_path}")
-                await send_status('running', 'extracting captcha text')
-                result = OCR_MODEL.predict(img_path)
-                logger.info('OCR prediction completed')
-                text = result[0]["rec_texts"][0]
-                logger.info(f'OCR extracted text: {text}')
-                cleaned_text = text.replace(" ", "")
-                
-                # Fill captcha and submit
-                await page.evaluate(f"() => {{ document.getElementById('loginsubmit_captchaid').value = '{cleaned_text}'; }}")
-                logger.info('Captcha filled in form')
-                await send_status('running', 'filling captcha')
-                await page.evaluate("() => { document.getElementById('btnSubmit').click(); }")
-                logger.info('Login button clicked')
-                await send_status('running', 'clicking login button')
-                # Wait for login to complete - check for either success (dashboard) or error
-                try:
-                    await send_status('running', 'waiting for login to complete')
-                    # Wait for either the Account statement link or an error message
-                    await page.wait_for_selector(
-                        "xpath=//a[contains(., 'Account statement')] | //*[contains(text(), 'Invalid')] | //*[contains(text(), 'Error')]",
-                        timeout=30000,
-                        state="visible"
-                    )
-                    logger.info('Login completed, page loaded')
-                    await send_status('running', 'login completed')
-                except Exception as e:
-                    logger.warning(f"Timeout waiting for post-login page: {str(e)}")
-                    await send_status('error', f"Timeout waiting for post-login page: {str(e)}")
-                    # Take screenshot for debugging
-                    await page.screenshot(path=f'core/bot/login_timeout_{bank_account_id}.png')
-                    logger.info(f'Screenshot saved: core/bot/login_timeout_{bank_account_id}.png')
-                    # Check if we're still on login page (login might have failed)
+                while captcha_attempt < max_captcha_retries and not login_successful:
+                    # Check stop flag at start of each captcha attempt
+                    await check_stop_and_raise(bank_account_id, send_status)
+
+                    captcha_attempt += 1
+                    logger.info(f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
+                    await send_status('running', f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
+
+                    # Wait for page to be stable and form elements to be ready
+                    try:
+                        await page.wait_for_load_state('domcontentloaded', timeout=10000)
+                        await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
+                        await page.wait_for_selector('#password', state='visible', timeout=5000)
+                    except Exception as e:
+                        logger.warning(f'Timeout waiting for form elements: {str(e)}')
+                        await asyncio.sleep(2)
+
+                    # Fill login credentials (re-fill after each page reload)
+                    try:
+                        if bank_account.login_type == 'corp':
+                            login_id_input = page.locator('#loginsubmit_loginId')
+                            await login_id_input.fill(username)
+                            user_id_input = page.locator('#loginsubmit_userId')
+                            await user_id_input.fill(username2)
+                        else:
+                            user_id_input = page.locator('#loginsubmit_userId')
+                            await user_id_input.fill(username)
+
+                        password_input = page.locator('#password')
+                        await password_input.fill(password)
+                        logger.info('Credentials filled successfully')
+                    except Exception as e:
+                        logger.warning(f'Error filling credentials: {str(e)}')
+                        await asyncio.sleep(1)
+                        continue
+
+                    # Extract captcha image
+                    await send_status('running', 'getting captcha image')
+                    try:
+                        src = await page.evaluate('document.getElementById("captchaimg").src')
+                        logger.debug(f'Captcha image source: {src}')
+                    except Exception as e:
+                        logger.warning(f'Error getting captcha image: {str(e)}')
+                        await asyncio.sleep(1)
+                        continue
+
+                    # Decode base64
+                    img_bytes = base64.b64decode(src.replace('data:image/png;base64,', ''))
+
+                    # Save to file (use unique filename per bank account)
+                    img_path = f"core/bot/decoded_image_{bank_account_id}.png"
+                    with open(img_path, "wb") as f:
+                        f.write(img_bytes)
+
+                    logger.info(f"Saved captcha image to {img_path}")
+                    await send_status('running', 'extracting captcha text')
+                    result = OCR_MODEL.readtext(img_path)
+                    logger.info('OCR prediction completed')
+                    text = ''.join([detection[1] for detection in result])
+                    logger.info(f'OCR extracted text: {text}')
+                    cleaned_text = text.replace(" ", "")
+
+                    # Fill captcha and submit
+                    try:
+                        logger.info(f'Trying to fill the captcha with: {cleaned_text}')
+                        # Use Playwright's fill() method which properly triggers input events
+                        captcha_input = page.locator('#loginsubmit_captchaid')
+                        await captcha_input.clear()
+                        await captcha_input.fill(cleaned_text)
+                        logger.info('Captcha filled in form using fill()')
+                        await send_status('running', 'filling captcha')
+
+                        # Click submit button
+                        submit_btn = page.locator('#btnSubmit')
+                        await submit_btn.click()
+                        logger.info('Login button clicked')
+                        await send_status('running', 'clicking login button')
+                    except Exception as e:
+                        logger.warning(f'Error submitting form: {str(e)}')
+                        await asyncio.sleep(1)
+                        continue
+
+                    # Wait for navigation to complete after form submission
+                    try:
+                        await send_status('running', 'waiting for login to complete')
+                        # Wait for either navigation to complete or page to reload
+                        await page.wait_for_load_state('networkidle', timeout=20000)
+                    except Exception as e:
+                        logger.warning(f"Timeout waiting for page load: {str(e)}")
+                        # Even if timeout, continue to check the result
+
+                    # Give the page a moment to fully settle
+                    await asyncio.sleep(1)
+
+                    # Check current URL for captcha error
                     current_url = page.url
-                    if 'corplogin' in current_url:
-                        logger.error('Still on login page - login may have failed')
-                        await send_status('error', 'login failed - still on login page after timeout')
-                        raise Exception('Login failed - still on login page after timeout')
-                
-                # Verify we're not on login page anymore
-                current_url = page.url
-                if 'corplogin' in current_url:
-                    logger.error('Login failed - still on login page')
-                    await send_status('error', 'login failed - still on login page after timeout')
+                    if 'Captcha+entered+is+Incorrect' in current_url or 'errmsg=Captcha' in current_url:
+                        logger.warning(f'Captcha incorrect on attempt {captcha_attempt}, page will reload with new captcha...')
+                        await send_status('running', f'Captcha incorrect, retrying ({captcha_attempt}/{max_captcha_retries})')
+
+                        # Wait for the page to fully reload and stabilize after captcha error
+                        try:
+                            await page.wait_for_load_state('domcontentloaded', timeout=10000)
+                            await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
+                            logger.info('Page reloaded, new captcha ready')
+                        except Exception as e:
+                            logger.warning(f'Error waiting for page reload: {str(e)}')
+                            await asyncio.sleep(2)
+
+                        # The page reload should have a new captcha, no need to call getCaptcha()
+                        # Just continue to next iteration
+                        continue
+
+                    # Check if login was successful (not on login page anymore)
+                    if 'corplogin' not in current_url:
+                        logger.info('Login successful - no longer on login page')
+                        login_successful = True
+                        break
+
+                    # Additional check: wait for Account statement link to appear
+                    try:
+                        await page.wait_for_selector(
+                            "xpath=//a[contains(., 'Account statement')]",
+                            timeout=10000,
+                            state="visible"
+                        )
+                        logger.info('Login completed, Account statement link found')
+                        await send_status('running', 'login completed')
+                        login_successful = True
+                        break
+                    except Exception as e:
+                        # Check if there's any other error on the page
+                        try:
+                            page_content = await page.content()
+                            if 'Invalid' in page_content or 'Error' in page_content:
+                                logger.error('Login failed - Invalid credentials or other error')
+                                await send_status('error', 'Login failed - Invalid credentials')
+                                raise Exception('Login failed - Invalid credentials or other error')
+                        except Exception as content_err:
+                            logger.warning(f'Error getting page content: {str(content_err)}')
+
+                        # If still on login page, wait for it to stabilize before next attempt
+                        if 'corplogin' in page.url:
+                            logger.warning(f'Still on login page after attempt {captcha_attempt}, preparing for retry...')
+                            try:
+                                await page.wait_for_load_state('domcontentloaded', timeout=10000)
+                                await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
+                            except Exception as wait_err:
+                                logger.warning(f'Error waiting for form: {str(wait_err)}')
+                                await asyncio.sleep(2)
+                            continue
+
+                # Check if we exhausted all retries
+                if not login_successful:
+                    logger.error(f'Login failed after {max_captcha_retries} captcha attempts')
+                    await send_status('error', f'Login failed after {max_captcha_retries} captcha attempts')
                     await page.screenshot(path=f'core/bot/login_failed_{bank_account_id}.png')
                     logger.info(f'Screenshot saved: core/bot/login_failed_{bank_account_id}.png')
-                    raise Exception('Login failed - captcha or credentials may be incorrect')
+                    raise Exception(f'Login failed after {max_captcha_retries} captcha attempts')
                 
+                # Check stop flag after login success
+                await check_stop_and_raise(bank_account_id, send_status)
+
                 # Click on Account statement with retry logic
                 max_retries = 3
                 retry_count = 0
                 account_statement_clicked = False
-                
+
                 while retry_count < max_retries and not account_statement_clicked:
+                    # Check stop flag at start of each retry
+                    await check_stop_and_raise(bank_account_id, send_status)
                     try:
                         # Try multiple selectors for Account statement
                         selectors = [
@@ -474,7 +603,11 @@ async def run_bot_for_account(bank_account_id: int):
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }""")
                 logger.info('To date set')
-                await send_status('running', 'to date set')                
+                await send_status('running', 'to date set')
+
+                # Check stop flag before downloading statement
+                await check_stop_and_raise(bank_account_id, send_status)
+
                 # Click view button
                 await page.evaluate("() => { document.getElementById('accountstatement_view').click(); }")
                 await send_status('running', 'clicking view button')
@@ -525,6 +658,16 @@ async def run_bot_for_account(bank_account_id: int):
                 await asyncio.sleep(10)
                 await send_status('completed', 'Bot execution finished')
                 logger.info(f'Bot execution completed for bank account {bank_account_id}')
+            except BotStoppedException as e:
+                # Bot was stopped by user - this is expected, not an error
+                logger.info(f"Bot stopped by user for bank account {bank_account_id}")
+                if browser:
+                    try:
+                        await browser.close()
+                        logger.info('Browser closed after stop request')
+                    except Exception as close_error:
+                        logger.warning(f"Error closing browser: {str(close_error)}")
+                raise
             except Exception as e:
                 logger.error(f"Bot execution failed for bank account {bank_account_id}: {str(e)}", exc_info=True)
                 # Close browser before re-raising
@@ -543,6 +686,9 @@ async def run_bot_for_account(bank_account_id: int):
                         logger.info('Browser closed')
                     except Exception as e:
                         logger.warning(f"Error closing browser: {str(e)}")
+    except BotStoppedException:
+        # Re-raise stop exception without logging as error
+        raise
     except Exception as e:
         logger.error(f"Failed to initialize browser for bank account {bank_account_id}: {str(e)}", exc_info=True)
         raise

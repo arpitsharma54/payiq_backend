@@ -381,31 +381,9 @@ class BotStatusView(APIView):
 
             is_running = task_id is not None
 
-            # Check if task is actually active in Celery
-            status_detail = 'idle'
-            if is_running:
-                try:
-                    inspect = app.control.inspect()
-                    active_tasks = inspect.active()
-                    if active_tasks:
-                        # Check if this task is in any worker's active tasks
-                        task_found = False
-                        for worker, tasks in active_tasks.items():
-                            for task in tasks:
-                                if task.get('id') == task_id:
-                                    task_found = True
-                                    status_detail = 'running'
-                                    break
-                            if task_found:
-                                break
-                        if not task_found:
-                            # Lock exists but task not active - clean up
-                            redis_client.delete(lock_key)
-                            is_running = False
-                            status_detail = 'idle'
-                except Exception:
-                    # If inspection fails, assume running if lock exists
-                    status_detail = 'running' if is_running else 'idle'
+            # Trust the lock as source of truth - if lock exists, bot is running
+            # Don't delete locks here - let the task clean up when it finishes
+            status_detail = 'running' if is_running else 'idle'
 
             return Response({
                 'bank_account_id': pk,
@@ -419,25 +397,13 @@ class BotStatusView(APIView):
             queryset = filter_by_user_merchants(queryset, request.user, 'merchant')
 
             statuses = {}
-            try:
-                inspect = app.control.inspect()
-                active_tasks = inspect.active() or {}
-                active_task_ids = set()
-                for worker, tasks in active_tasks.items():
-                    for task in tasks:
-                        active_task_ids.add(task.get('id'))
-            except Exception:
-                active_task_ids = set()
 
             for account in queryset:
                 lock_key = f'celery_task_run_bot_lock_{account.id}'
                 task_id = redis_client.get(lock_key)
-                is_running = task_id is not None and task_id in active_task_ids
-
-                # Clean up stale locks
-                if task_id and task_id not in active_task_ids:
-                    redis_client.delete(lock_key)
-                    is_running = False
+                # Trust the lock as source of truth - if lock exists, bot is running
+                # Don't delete locks here - let the task clean up when it finishes
+                is_running = task_id is not None
 
                 statuses[account.id] = {
                     'is_running': is_running,

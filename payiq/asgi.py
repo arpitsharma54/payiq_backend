@@ -12,7 +12,7 @@ from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
 from ws.routing import websocket_urlpatterns   # change to your folder
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'payiq_backend.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'payiq.settings')
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),

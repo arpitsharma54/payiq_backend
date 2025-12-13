@@ -69,6 +69,8 @@ services:
       - static_data:/app/static
       - logs_data:/app/logs
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -143,6 +145,8 @@ services:
     volumes:
       - logs_data:/app/logs
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:

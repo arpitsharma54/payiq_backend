@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Payin
+from merchants.models import ExtractedTransactions
 from merchants.serializer import MerchantSerializer
 from accounts.models import CustomUser
 
@@ -139,7 +140,7 @@ class PayinListSerializer(serializers.ModelSerializer):
     merchant_name = serializers.CharField(source='merchant.name', read_only=True)
     merchant_code = serializers.CharField(source='merchant.code', read_only=True)
     duration_display = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Payin
         fields = [
@@ -159,8 +160,44 @@ class PayinListSerializer(serializers.ModelSerializer):
             'user_submitted_utr',
             'updated_at',
         ]
-    
+
     def get_duration_display(self, obj):
         """Returns formatted duration string"""
         return obj.get_duration_display()
+
+
+class ExtractedTransactionSerializer(serializers.ModelSerializer):
+    """Serializer for ExtractedTransactions (queued transactions)"""
+    bank_account_nickname = serializers.CharField(source='bank_account.nickname', read_only=True)
+    bank_account_holder = serializers.CharField(source='bank_account.account_holder_name', read_only=True)
+    merchant_name = serializers.SerializerMethodField()
+    merchant_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExtractedTransactions
+        fields = [
+            'id',
+            'bank_account',
+            'bank_account_nickname',
+            'bank_account_holder',
+            'merchant_name',
+            'merchant_id',
+            'amount',
+            'utr',
+            'is_used',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def get_merchant_name(self, obj):
+        """Get merchant name through bank_account relationship"""
+        if obj.bank_account and obj.bank_account.merchant:
+            return obj.bank_account.merchant.name
+        return None
+
+    def get_merchant_id(self, obj):
+        """Get merchant_id through bank_account relationship"""
+        if obj.bank_account and obj.bank_account.merchant:
+            return obj.bank_account.merchant_id
+        return None
 
