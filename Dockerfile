@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
-    # For PaddleOCR
+    # For EasyOCR
     libgl1 \
     libglib2.0-0 \
     libsm6 \

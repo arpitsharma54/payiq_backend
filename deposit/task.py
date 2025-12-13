@@ -98,6 +98,31 @@ def run_single_bot(self, bank_account_id):
                 run_async(run_bot_for_account, bank_account_id)
                 logger.info(f"Bot iteration {iteration} completed for account {bank_account_id}.")
             except Exception as e:
+                # Check if this was a stop request
+                from core.bot.iob_bot.iob_bot import BotStoppedException
+                if isinstance(e, BotStoppedException):
+                    logger.info(f"Bot stopped by user for account {bank_account_id}")
+                    # Send stopped status via WebSocket
+                    try:
+                        from channels.layers import get_channel_layer
+                        from asgiref.sync import async_to_sync
+                        from merchants.models import BankAccount
+                        bank_account = BankAccount.objects.get(id=bank_account_id)
+                        channel_layer = get_channel_layer()
+                        async_to_sync(channel_layer.group_send)(
+                            "task_status_updates",
+                            {
+                                "type": "task_update",
+                                "status": "stopped",
+                                "message": "Bot stopped by user request",
+                                "bank_account_id": bank_account_id,
+                                "merchant_id": bank_account.merchant_id,
+                            }
+                        )
+                    except Exception as ws_error:
+                        logger.warning(f"Could not send WebSocket stop update: {str(ws_error)}")
+                    break  # Exit the loop immediately
+
                 logger.error(f"Bot iteration {iteration} failed for account {bank_account_id}: {str(e)}", exc_info=True)
                 # Continue to next iteration even if one fails
                 # Send error status via WebSocket
