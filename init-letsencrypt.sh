@@ -57,20 +57,19 @@ if [ -d "./certbot/conf/live/$DOMAIN" ]; then
     fi
 fi
 
-# Create dummy certificate for nginx to start
 echo -e "${YELLOW}Creating dummy certificate for nginx startup...${NC}"
-DUMMY_CERT_PATH="./certbot/conf/live/$DOMAIN"
-mkdir -p "$DUMMY_CERT_PATH"
 
 docker compose run --rm --entrypoint "\
+    mkdir -p /etc/letsencrypt/live/$DOMAIN && \
+    mkdir -p /etc/letsencrypt/archive/$DOMAIN && \
     openssl req -x509 -nodes -newkey rsa:4096 -days 1 \
-    -keyout '/etc/letsencrypt/live/$DOMAIN/privkey.pem' \
-    -out '/etc/letsencrypt/live/$DOMAIN/fullchain.pem' \
-    -subj '/CN=localhost'" certbot
+        -keyout /etc/letsencrypt/archive/$DOMAIN/privkey1.pem \
+        -out /etc/letsencrypt/archive/$DOMAIN/fullchain1.pem \
+        -subj '/CN=localhost' && \
+    ln -sf /etc/letsencrypt/archive/$DOMAIN/privkey1.pem /etc/letsencrypt/live/$DOMAIN/privkey.pem && \
+    ln -sf /etc/letsencrypt/archive/$DOMAIN/fullchain1.pem /etc/letsencrypt/live/$DOMAIN/fullchain.pem && \
+    ln -sf /etc/letsencrypt/archive/$DOMAIN/fullchain1.pem /etc/letsencrypt/live/$DOMAIN/chain.pem" certbot
 
-# Create chain.pem (copy of fullchain for OCSP)
-docker compose run --rm --entrypoint "\
-    cp /etc/letsencrypt/live/$DOMAIN/fullchain.pem /etc/letsencrypt/live/$DOMAIN/chain.pem" certbot
 
 echo -e "${GREEN}Dummy certificate created${NC}"
 
