@@ -45,9 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements-base.txt requirements-celery.txt ./
 RUN pip install --no-cache-dir -r requirements-celery.txt
 
-# Install Playwright browsers
-RUN playwright install chromium && playwright install-deps chromium
-
 # Production stage
 FROM base as production
 
