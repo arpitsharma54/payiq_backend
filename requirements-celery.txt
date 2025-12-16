@@ -1,0 +1,13 @@
+# Celery worker requirements
+-r requirements-base.txt
+
+# Heavy processing packages (only needed by celery worker)
+
+# OCR processing
+easyocr==1.7.2
+
+# Browser automation
+playwright==1.56.0
+
+# Data processing
+pandas==2.3.3

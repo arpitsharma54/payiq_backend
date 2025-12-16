@@ -301,6 +301,7 @@ class Merchant(SoftDeleteModel):
 class ExtractedTransactions(SoftDeleteModel):
     """Model for extracted transactions"""
     bank_account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name='extracted_transactions')
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='extracted_transactions')
     amount = models.PositiveIntegerField(help_text="Amount of the transaction")
     utr = models.CharField(max_length=255, help_text="UTR of the transaction", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation time")
@@ -314,17 +315,8 @@ class ExtractedTransactions(SoftDeleteModel):
         indexes = [
             models.Index(fields=['utr', 'is_used']),
             models.Index(fields=['bank_account', 'utr']),
+            models.Index(fields=['merchant', 'utr']),
         ]
 
     def __str__(self):
         return f"{self.amount} - {self.utr}"
-
-    @property
-    def merchant(self):
-        """Get merchant through bank_account relationship"""
-        return self.bank_account.merchant if self.bank_account else None
-
-    @property
-    def merchant_id(self):
-        """Get merchant_id through bank_account relationship"""
-        return self.bank_account.merchant_id if self.bank_account else None

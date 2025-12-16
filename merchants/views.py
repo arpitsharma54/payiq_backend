@@ -303,11 +303,14 @@ class StopBotView(APIView):
     """
     API view for stopping the bot for a specific bank account.
     POST: Stop bot
+    Query params:
+    - force (optional): If 'true', forcefully terminate the task immediately
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         bank_account = get_object_or_404(BankAccount, pk=pk)
+        force = request.query_params.get('force', '').lower() == 'true'
 
         # Get task ID from lock
         lock_key = f'celery_task_run_bot_lock_{pk}'
@@ -322,17 +325,18 @@ class StopBotView(APIView):
         # Set stop flag to signal the continuous loop to stop
         redis_client.set(stop_flag_key, '1', ex=300)  # Expires in 5 minutes as safety
 
-        # Send status update via WebSocket before stopping
+        # Send status update via WebSocket
         try:
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
             channel_layer = get_channel_layer()
+            status_message = "Force stopping bot..." if force else "Bot stop signal sent, stopping after current iteration..."
             async_to_sync(channel_layer.group_send)(
                 "task_status_updates",
                 {
                     "type": "task_update",
                     "status": "stopping",
-                    "message": "Bot stop signal sent, stopping after current iteration...",
+                    "message": status_message,
                     "bank_account_id": pk,
                     "merchant_id": bank_account.merchant_id,
                 }
@@ -342,12 +346,43 @@ class StopBotView(APIView):
             logger = logging.getLogger(__name__)
             logger.warning(f"Could not send WebSocket status update: {str(e)}")
 
-        # Try graceful stop first (let current iteration finish)
-        # The task will check the stop flag and exit the loop
-        # If task doesn't stop within reasonable time, we can revoke it
+        if force:
+            # Force revoke the Celery task immediately
+            try:
+                app.control.revoke(task_id, terminate=True, signal='SIGKILL')
+                # Clean up the lock and stop flag
+                redis_client.delete(lock_key)
+                redis_client.delete(stop_flag_key)
 
+                # Send stopped status
+                try:
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    channel_layer = get_channel_layer()
+                    async_to_sync(channel_layer.group_send)(
+                        "task_status_updates",
+                        {
+                            "type": "task_update",
+                            "status": "stopped",
+                            "message": "Bot force stopped",
+                            "bank_account_id": pk,
+                            "merchant_id": bank_account.merchant_id,
+                        }
+                    )
+                except Exception:
+                    pass
+
+                return Response({
+                    'message': 'Bot force stopped successfully'
+                }, status=status.HTTP_200_OK)
+            except Exception as e:
+                return Response({
+                    'message': f'Failed to force stop bot: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Graceful stop - let current iteration finish
         return Response({
-            'message': 'Bot stop signal sent. Bot will stop after current iteration completes.'
+            'message': 'Bot stop signal sent. Bot will stop after current iteration completes. Use ?force=true to stop immediately.'
         }, status=status.HTTP_200_OK)
 
 

@@ -1,0 +1,25 @@
+# Base requirements shared by web and celery
+# All Django-related packages go here since both services use Django
+
+# Django core
+django==5.2.8
+djangorestframework==3.16.1
+djangorestframework-simplejwt==5.5.1
+django-cors-headers==4.3.1
+
+# Database
+psycopg2-binary==2.9.11
+
+# Environment
+python-dotenv==1.2.1
+
+# Redis & Celery (both services need celery for Django app loading)
+redis==7.1.0
+celery==5.5.3
+
+# WebSocket support (in INSTALLED_APPS, needed by both)
+channels==4.3.2
+channels-redis==4.3.0
+
+# Static files
+whitenoise==6.11.0

@@ -1,0 +1,5 @@
+# Web (Django) requirements
+-r requirements-base.txt
+
+# ASGI server for WebSocket support
+daphne==4.2.1
