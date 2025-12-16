@@ -138,7 +138,7 @@ REST_FRAMEWORK = {
 }
 
 # Bot execution interval in seconds (how often bot runs when started)
-BOT_EXECUTION_INTERVAL = 60  # Default: 60 seconds (1 minute)
+BOT_EXECUTION_INTERVAL = 30  # Default: 60 seconds (1 minute)
 
 CELERY_BEAT_SCHEDULE = {
     'run-bot-every-30-seconds': {
