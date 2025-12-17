@@ -37,7 +37,7 @@ class PayinListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Get list of all payins with optional filtering"""
+        """Get list of all payins with optional filtering and pagination"""
         queryset = Payin.objects.all()
 
         # Filter by user's accessible merchants (multi-tenant)
@@ -82,12 +82,76 @@ class PayinListView(APIView):
                     'error': 'Invalid merchant ID format'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Filter by merchant_order_id if provided
+        merchant_order_id = request.query_params.get('merchant_order_id', None)
+        if merchant_order_id:
+            queryset = queryset.filter(merchant_order_id__icontains=merchant_order_id)
+
+        # Filter by user if provided
+        user_filter = request.query_params.get('user', None)
+        if user_filter:
+            queryset = queryset.filter(user__icontains=user_filter)
+
+        # Filter by bank if provided
+        bank_filter = request.query_params.get('bank', None)
+        if bank_filter:
+            queryset = queryset.filter(bank__icontains=bank_filter)
+
+        # Filter by payin_uuid if provided
+        payin_uuid_filter = request.query_params.get('payin_uuid', None)
+        if payin_uuid_filter:
+            queryset = queryset.filter(payin_uuid__icontains=payin_uuid_filter)
+
+        # Filter by amount if provided
+        amount_filter = request.query_params.get('amount', None)
+        if amount_filter:
+            try:
+                queryset = queryset.filter(pay_amount=Decimal(amount_filter))
+            except (ValueError, TypeError):
+                pass
+
+        # Filter by UTR if provided
+        utr_filter = request.query_params.get('utr', None)
+        if utr_filter:
+            queryset = queryset.filter(Q(utr__icontains=utr_filter) | Q(user_submitted_utr__icontains=utr_filter))
+
         # Order by created_at descending (newest first)
         queryset = queryset.order_by('-created_at')
 
+        # Get total count before pagination
+        total_count = queryset.count()
+
+        # Pagination
+        page = request.query_params.get('page', 1)
+        page_size = request.query_params.get('page_size', 20)
+        try:
+            page = int(page)
+            page_size = int(page_size)
+            if page < 1:
+                page = 1
+            if page_size < 1:
+                page_size = 20
+            if page_size > 100:
+                page_size = 100  # Max page size limit
+        except ValueError:
+            page = 1
+            page_size = 20
+
+        # Calculate pagination offsets
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        queryset = queryset[start_index:end_index]
+
         serializer = PayinListSerializer(queryset, many=True)
+
+        # Calculate total pages
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+
         return Response({
-            'count': queryset.count(),
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
@@ -687,8 +751,9 @@ class DashboardView(APIView):
         settlement = Settlement.objects.filter(merchant__in=merchant_ids, status='success').aggregate(settlement=Sum('amount'))['settlement']
         if not settlement:
             settlement = 0
-        # Net Balance (settlement - withdrawals)
-        net_balance = (total_deposits - settlement) - all_time_commission
+        # Net Balance (all-time deposits - settlement - commission)
+        # Note: net_balance should use all_time_deposits, not time-filtered total_deposits
+        net_balance = (all_time_deposits - settlement) - all_time_commission
 
         # Generate chart data based on time range
         chart_data = []
@@ -871,11 +936,61 @@ class QueuedTransactionsView(APIView):
             except ValueError:
                 pass
 
+        # Filter by bank nickname, account holder name, or merchant name if provided
+        bank_filter = request.query_params.get('bank', None)
+        if bank_filter:
+            queryset = queryset.filter(
+                Q(bank_account__nickname__icontains=bank_filter) |
+                Q(bank_account__account_holder_name__icontains=bank_filter) |
+                Q(bank_account__merchant__name__icontains=bank_filter) |
+                Q(bank_account__merchant__code__icontains=bank_filter)
+            )
+
+        # Filter by created_at date range if provided
+        created_at_from = request.query_params.get('created_at_from', None)
+        if created_at_from:
+            queryset = queryset.filter(created_at__date__gte=created_at_from)
+
+        created_at_to = request.query_params.get('created_at_to', None)
+        if created_at_to:
+            queryset = queryset.filter(created_at__date__lte=created_at_to)
+
         # Order by created_at descending (newest first)
         queryset = queryset.order_by('-created_at')
 
+        # Get total count before pagination
+        total_count = queryset.count()
+
+        # Pagination
+        page = request.query_params.get('page', 1)
+        page_size = request.query_params.get('page_size', 20)
+        try:
+            page = int(page)
+            page_size = int(page_size)
+            if page < 1:
+                page = 1
+            if page_size < 1:
+                page_size = 20
+            if page_size > 100:
+                page_size = 100
+        except ValueError:
+            page = 1
+            page_size = 20
+
+        # Calculate pagination offsets
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        queryset = queryset[start_index:end_index]
+
         serializer = ExtractedTransactionSerializer(queryset, many=True)
+
+        # Calculate total pages
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+
         return Response({
-            'count': queryset.count(),
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
             'results': serializer.data
         }, status=status.HTTP_200_OK)

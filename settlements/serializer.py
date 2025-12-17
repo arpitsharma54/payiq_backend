@@ -87,6 +87,26 @@ class SettlementSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
+    to_settlement_account_nickname = serializers.CharField(
+        source='to_settlement_account.nickname',
+        read_only=True,
+        allow_null=True
+    )
+    to_settlement_account_holder_name = serializers.CharField(
+        source='to_settlement_account.account_holder_name',
+        read_only=True,
+        allow_null=True
+    )
+    to_settlement_account_number = serializers.CharField(
+        source='to_settlement_account.account_number',
+        read_only=True,
+        allow_null=True
+    )
+    to_settlement_account_ifsc_code = serializers.CharField(
+        source='to_settlement_account.ifsc_code',
+        read_only=True,
+        allow_null=True
+    )
     bank_details_display = serializers.SerializerMethodField()
 
     class Meta:
@@ -98,6 +118,11 @@ class SettlementSerializer(serializers.ModelSerializer):
             'merchant_code',
             'settlement_account',
             'settlement_account_nickname',
+            'to_settlement_account',
+            'to_settlement_account_nickname',
+            'to_settlement_account_holder_name',
+            'to_settlement_account_number',
+            'to_settlement_account_ifsc_code',
             'amount',
             'status',
             'status_display',
@@ -126,6 +151,7 @@ class SettlementCreateSerializer(serializers.ModelSerializer):
         fields = [
             'merchant',
             'settlement_account',
+            'to_settlement_account',
             'amount',
             'bank_account_holder_name',
             'bank_account_number',
