@@ -54,7 +54,7 @@ case "$1" in
     wait_for_redis
     python manage.py migrate --noinput
     python manage.py collectstatic --noinput
-    exec daphne -b 0.0.0.0 -p 8000 payiq.asgi:application
+    exec uvicorn payiq.asgi:application --host 0.0.0.0 --port 8000
     ;;
 
   celery-worker)

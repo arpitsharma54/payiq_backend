@@ -203,6 +203,38 @@ class BankAccountStatusUpdateView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    def _stop_bot_for_account(self, pk, bank_account):
+        """Stop bot for a specific bank account and send notification."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        lock_key = f'celery_task_run_bot_lock_{pk}'
+        stop_flag_key = f'bot_stop_flag_{pk}'
+        task_id = redis_client.get(lock_key)
+
+        if task_id:
+            # Set stop flag
+            redis_client.set(stop_flag_key, '1', ex=300)
+            logger.info(f"Auto-stopping bot for bank account {pk} due to account disable")
+
+            # Send WebSocket notification
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    "task_status_updates",
+                    {
+                        "type": "task_update",
+                        "status": "stopped",
+                        "message": "Bot auto-stopped: Bank account disabled",
+                        "bank_account_id": pk,
+                        "merchant_id": bank_account.merchant_id,
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Could not send WebSocket update: {e}")
+
     def patch(self, request, pk):
         """Update status fields of a bank account"""
         bank_account = get_object_or_404(BankAccount, pk=pk)
@@ -229,6 +261,11 @@ class BankAccountStatusUpdateView(APIView):
         serializer = BankAccountCreateSerializer(bank_account, data=update_data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_bank_account = serializer.save()
+
+        # If bank account was disabled, stop the bot for this account
+        if request.data and request.data.get('status', True) == False:
+            self._stop_bot_for_account(pk, bank_account)
+
         # Return full serializer with read-only fields
         response_serializer = BankAccountSerializer(updated_bank_account)
         return Response(response_serializer.data, status=status.HTTP_200_OK)

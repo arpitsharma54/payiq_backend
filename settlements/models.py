@@ -114,7 +114,16 @@ class Settlement(SoftDeleteModel):
         null=True,
         blank=True,
         related_name='settlements',
-        help_text="Settlement account used for this settlement"
+        help_text="Settlement account used for this settlement (from)"
+    )
+
+    to_settlement_account = models.ForeignKey(
+        'SettlementAccount',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='settlements_received',
+        help_text="Destination settlement account (to)"
     )
 
     # Amount
