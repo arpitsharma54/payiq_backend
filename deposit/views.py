@@ -268,25 +268,59 @@ class PayinResetView(APIView):
 class PayinNotifyView(APIView):
     """
     API view for notifying about a payin.
-    POST: Send notification for a payin
+    POST: Send HTTP POST notification to merchant's callback URL
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        """Notify about a payin"""
+        """Notify merchant by sending HTTP POST to their callback URL"""
+        import requests as http_requests
+
         payin = get_object_or_404(Payin, pk=pk)
 
-        # In a real implementation, this would send notifications
-        # For now, we'll just return a success message
-        # You can integrate with email, SMS, or push notification services here
+        # Check if merchant has callback URL configured
+        if not payin.merchant or not payin.merchant.callback_url:
+            return Response({
+                'error': 'Merchant has no callback URL configured'
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = PayinSerializer(payin)
-        return Response({
-            'message': f'Notification sent for payin {payin.id}',
+        # Build payload with payment details
+        payload = {
             'payin_uuid': str(payin.payin_uuid),
+            'code': payin.code,
+            'merchant_order_id': str(payin.merchant_order_id) if payin.merchant_order_id else None,
             'status': payin.status,
-            'data': serializer.data
-        }, status=status.HTTP_200_OK)
+            'amount': str(payin.pay_amount) if payin.pay_amount else '0.00',
+            'confirmed_amount': str(payin.confirmed_amount) if payin.confirmed_amount else None,
+            'utr': payin.utr,
+            'user': payin.user,
+            'bank': payin.bank,
+        }
+
+        try:
+            response = http_requests.post(
+                payin.merchant.callback_url,
+                json=payload,
+                timeout=30,
+                headers={'Content-Type': 'application/json'}
+            )
+
+            serializer = PayinSerializer(payin)
+            return Response({
+                'message': f'Notification sent for payin {payin.id}',
+                'payin_uuid': str(payin.payin_uuid),
+                'callback_status_code': response.status_code,
+                'status': payin.status,
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+        except http_requests.exceptions.Timeout:
+            return Response({
+                'error': 'Callback request timed out after 30 seconds'
+            }, status=status.HTTP_504_GATEWAY_TIMEOUT)
+        except http_requests.exceptions.RequestException as e:
+            return Response({
+                'error': f'Failed to send notification: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PayinActionsView(APIView):
@@ -994,3 +1028,95 @@ class QueuedTransactionsView(APIView):
             'total_pages': total_pages,
             'results': serializer.data
         }, status=status.HTTP_200_OK)
+
+
+class PayinReportExportView(APIView):
+    """
+    API view for exporting payins to Excel.
+    GET: Download Excel file with payin data
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Export payins to Excel file"""
+        try:
+            from openpyxl import Workbook
+            from django.http import HttpResponse
+        except ImportError:
+            return Response({
+                'error': 'openpyxl package is not installed'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Get filters from query parameters
+        merchant_id = request.query_params.get('merchant')
+        payin_status = request.query_params.get('status')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        # Get user's accessible merchants
+        user_role = request.user.role.lower() if request.user.role else ''
+        is_super_admin = request.user.is_superuser or user_role == 'super_admin'
+
+        # Build queryset
+        if is_super_admin:
+            queryset = Payin.objects.filter(deleted_at=None)
+        else:
+            merchant_ids = request.user.get_accessible_merchant_ids()
+            queryset = Payin.objects.filter(deleted_at=None, merchant_id__in=merchant_ids)
+
+        # Apply filters
+        if merchant_id:
+            queryset = queryset.filter(merchant_id=merchant_id)
+        if payin_status:
+            queryset = queryset.filter(status=payin_status)
+        if start_date:
+            queryset = queryset.filter(created_at__date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(created_at__date__lte=end_date)
+
+        # Order by created_at descending
+        queryset = queryset.order_by('-created_at')
+
+        # Create Excel workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Payins Report"
+
+        # Headers - all payin fields
+        headers = [
+            'ID', 'Code', 'Payin UUID', 'Merchant Code', 'Merchant Name',
+            'Merchant Order ID', 'User', 'Amount', 'Confirmed Amount',
+            'UTR (Bank)', 'User Submitted UTR', 'Bank', 'Status',
+            'Duration', 'Created At', 'Updated At'
+        ]
+        ws.append(headers)
+
+        # Data rows
+        for payin in queryset:
+            ws.append([
+                payin.id,
+                payin.code,
+                str(payin.payin_uuid),
+                payin.merchant.code if payin.merchant else '',
+                payin.merchant.name if payin.merchant else '',
+                str(payin.merchant_order_id) if payin.merchant_order_id else '',
+                payin.user or '',
+                str(payin.pay_amount) if payin.pay_amount else '0.00',
+                str(payin.confirmed_amount) if payin.confirmed_amount else '0.00',
+                payin.utr or '',
+                payin.user_submitted_utr or '',
+                payin.bank or '',
+                payin.status,
+                payin.duration or '',
+                payin.created_at.strftime('%Y-%m-%d %H:%M:%S') if payin.created_at else '',
+                payin.updated_at.strftime('%Y-%m-%d %H:%M:%S') if payin.updated_at else '',
+            ])
+
+        # Create HTTP response with Excel file
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        filename = f'payins_report_{start_date or "all"}_{end_date or "all"}.xlsx'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        wb.save(response)
+        return response

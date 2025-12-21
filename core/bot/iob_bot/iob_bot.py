@@ -357,9 +357,10 @@ async def verify_transactions(send_status) -> dict:
                                 f"Marking payin as dropped."
                             )
                             payin.status = 'dropped'
+                            payin.amount = transaction_obj.amount
                             if hasattr(payin, 'assigned_at') and payin.assigned_at:
                                 payin.duration = timezone.now() - payin.assigned_at
-                            payin.save(update_fields=['status', 'duration'])
+                            payin.save(update_fields=['status', 'duration', 'amount'])
                             dropped_count += 1
 
                         else:
@@ -763,7 +764,7 @@ async def run_bot_for_account(bank_account_id: int):
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
+                headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",

@@ -33,6 +33,7 @@ class SettlementAccountListView(APIView):
         nickname = request.query_params.get('nickname', '').strip()
         merchant_id = request.query_params.get('merchant', '').strip()
         instrument_type = request.query_params.get('instrument_type', '').strip()
+        account_type = request.query_params.get('account_type', '').strip()
 
         if nickname:
             queryset = queryset.filter(nickname__icontains=nickname)
@@ -40,6 +41,8 @@ class SettlementAccountListView(APIView):
             queryset = queryset.filter(merchant_id=merchant_id)
         if instrument_type:
             queryset = queryset.filter(instrument_type=instrument_type)
+        if account_type:
+            queryset = queryset.filter(account_type=account_type)
 
         serializer = SettlementAccountSerializer(queryset, many=True)
         return Response({

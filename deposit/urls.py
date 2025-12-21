@@ -11,11 +11,15 @@ from .views import (
     PayinPublicSessionView,
     PayinPublicCheckStatusView,
     QueuedTransactionsView,
+    PayinReportExportView,
 )
 
 urlpatterns = [
     # Dashboard
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
+
+    # Reports export
+    path('reports/export/', PayinReportExportView.as_view(), name='payin-report-export'),
 
     # Queued transactions (extracted transactions with is_used=False)
     path('queued/', QueuedTransactionsView.as_view(), name='queued-transactions'),
