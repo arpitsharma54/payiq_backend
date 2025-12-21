@@ -19,6 +19,12 @@ SETTLEMENT_STATUS_CHOICES = [
     ('cancelled', 'Cancelled'),
 ]
 
+# Settlement account type choices
+ACCOUNT_TYPE_CHOICES = [
+    ('from', 'From Account (Source)'),
+    ('to', 'To Account (Destination)'),
+]
+
 
 class SettlementAccount(SoftDeleteModel):
     """Model for settlement accounts (bank accounts for receiving settlements)"""
@@ -43,6 +49,14 @@ class SettlementAccount(SoftDeleteModel):
         choices=INSTRUMENT_CHOICES,
         default='bank',
         help_text="Type of settlement instrument"
+    )
+
+    # Account Type (From/To)
+    account_type = models.CharField(
+        max_length=10,
+        choices=ACCOUNT_TYPE_CHOICES,
+        default='from',
+        help_text="Whether this account is used as source (from) or destination (to)"
     )
 
     # Bank Details (used when instrument_type is 'bank')

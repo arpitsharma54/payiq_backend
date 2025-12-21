@@ -7,6 +7,7 @@ class SettlementAccountSerializer(serializers.ModelSerializer):
     merchant_name = serializers.CharField(source='merchant.name', read_only=True)
     merchant_code = serializers.CharField(source='merchant.code', read_only=True)
     instrument_type_display = serializers.CharField(source='get_instrument_type_display', read_only=True)
+    account_type_display = serializers.CharField(source='get_account_type_display', read_only=True)
 
     class Meta:
         model = SettlementAccount
@@ -18,6 +19,8 @@ class SettlementAccountSerializer(serializers.ModelSerializer):
             'nickname',
             'instrument_type',
             'instrument_type_display',
+            'account_type',
+            'account_type_display',
             'account_holder_name',
             'account_number',
             'ifsc_code',
@@ -37,6 +40,7 @@ class SettlementAccountCreateSerializer(serializers.ModelSerializer):
             'merchant',
             'nickname',
             'instrument_type',
+            'account_type',
             'account_holder_name',
             'account_number',
             'ifsc_code',
