@@ -764,7 +764,7 @@ async def run_bot_for_account(bank_account_id: int):
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
