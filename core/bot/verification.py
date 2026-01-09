@@ -124,11 +124,12 @@ def verify_transactions_sync(bank_account_id: int = None) -> dict:
                         f"Marking payin as dropped."
                     )
                     payin.status = 'dropped'
+                    payin.confirmed_amount = transaction_obj.amount
                     # Calculate duration if assigned_at exists
                     if hasattr(payin, 'assigned_at') and payin.assigned_at:
                         payin.duration = timezone.now() - payin.assigned_at
                         logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
-                    payin.save(update_fields=['status', 'duration'])
+                    payin.save(update_fields=['status', 'duration', 'confirmed_amount'])
                     dropped_count += 1
 
                 # Transaction is valid

@@ -9,22 +9,9 @@ from core.models.base import SoftDeleteModel
 # Bank type choices for the bot system
 BANK_TYPE_CHOICES = [
     ('iob', 'Indian Overseas Bank (IOB)'),
-    ('sbi', 'State Bank of India (SBI)'),
-    ('hdfc', 'HDFC Bank'),
-    ('icici', 'ICICI Bank'),
-    ('axis', 'Axis Bank'),
-    ('kotak', 'Kotak Mahindra Bank'),
-    ('pnb', 'Punjab National Bank (PNB)'),
-    ('bob', 'Bank of Baroda (BOB)'),
-    ('canara', 'Canara Bank'),
-    ('union', 'Union Bank of India'),
-    ('idbi', 'IDBI Bank'),
-    ('yes', 'Yes Bank'),
-    ('indusind', 'IndusInd Bank'),
-    ('federal', 'Federal Bank'),
-    ('rbl', 'RBL Bank'),
-    ('other', 'Other'),
+    ('cub', 'City Union Bank (CUB)'),
 ]
+
 
 
 class BankAccount(SoftDeleteModel):
