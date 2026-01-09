@@ -47,6 +47,15 @@ async def run_iob_bot(bank_account_id: int):
     return await run_bot_for_account(bank_account_id)
 
 
+# Register CUB bot
+@register_bot('cub')
+async def run_cub_bot(bank_account_id: int):
+    """Run CUB bank bot"""
+    from .cub_bot.cub_bot import run_bot_for_account
+    return await run_bot_for_account(bank_account_id)
+
+
+
 # Placeholder registrations for future bank bots
 # When you implement a new bank bot, create a new folder (e.g., sbi_bot/)
 # with sbi_bot.py inside it and register it here:
