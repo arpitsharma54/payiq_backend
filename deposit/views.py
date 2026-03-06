@@ -477,29 +477,29 @@ class PayinCreatePaymentLinkView(APIView):
         return Response({
             'message': 'Payment link created successfully',
             'payment_link_url': payment_url,
-            'session_id': str(payin_uuid),
             'sign': sign,
             'merchant_id': merchant.id,
             'user_id': user_id,
             'pay_amount': str(pay_amount) if pay_amount else None,
+            'payin_uuid': str(payin_uuid),
         }, status=status.HTTP_201_CREATED)
 
 
 class PayinPublicCheckStatusView(APIView):
     """
     Public API view for checking payment status by payin_uuid or merchant_order_id.
-    Authentication: Requires merchant API key in header (X-API-Key) or query param (api_key).
+    Authentication: Requires merchant API key in header (X-API-Key).
     """
     permission_classes = [AllowAny]
 
-    def get(self, request):
-        """Check payment status by payin_uuid or merchant_order_id"""
-        # Extract API key from header or query param
-        api_key = request.headers.get('X-API-Key') or request.query_params.get('api_key')
+    def _get_payment_status(self, request):
+        """Common method to check payment status - used by both GET and POST"""
+        # Extract API key from header only (not from query params or body)
+        api_key = request.headers.get('X-API-Key')
 
         if not api_key:
             return Response({
-                'error': 'API key is required. Provide it in X-API-Key header or api_key query parameter.'
+                'error': 'API key is required. Provide it in X-API-Key header.'
             }, status=status.HTTP_401_UNAUTHORIZED)
 
         # Validate API key and get merchant
@@ -510,9 +510,9 @@ class PayinPublicCheckStatusView(APIView):
                 'error': 'Invalid API key'
             }, status=status.HTTP_403_FORBIDDEN)
 
-        # Get query parameters
-        payin_uuid = request.query_params.get('payin_uuid')
-        merchant_order_id = request.query_params.get('merchant_order_id')
+        # Get identifiers from query params (GET) or request body (POST)
+        payin_uuid = request.query_params.get('payin_uuid') or request.data.get('payin_uuid', None)
+        merchant_order_id = request.query_params.get('merchant_order_id') or request.data.get('merchant_order_id', None)
 
         # At least one identifier must be provided
         if not payin_uuid and not merchant_order_id:
@@ -523,20 +523,47 @@ class PayinPublicCheckStatusView(APIView):
         # Find the payin
         try:
             if payin_uuid:
-                payin = Payin.objects.get(payin_uuid=payin_uuid, merchant=merchant)
+                payin = Payin.objects.get(payin_uuid=payin_uuid, merchant=merchant, deleted_at=None)
             else:
-                payin = Payin.objects.get(merchant_order_id=merchant_order_id, merchant=merchant)
+                payin = Payin.objects.get(merchant_order_id=merchant_order_id, merchant=merchant, deleted_at=None)
         except Payin.DoesNotExist:
             return Response({
                 'error': 'Payment not found'
             }, status=status.HTTP_404_NOT_FOUND)
         except Payin.MultipleObjectsReturned:
             # If multiple payins found with same merchant_order_id, get the most recent
-            payin = Payin.objects.filter(merchant_order_id=merchant_order_id, merchant=merchant).order_by('-created_at').first()
+            payin = Payin.objects.filter(
+                merchant_order_id=merchant_order_id, 
+                merchant=merchant,
+                deleted_at=None
+            ).order_by('-created_at').first()
 
+        # Calculate duration if status is success
+        if payin.status == 'success':
+            payin.calculate_duration()
+
+        # Return comprehensive deposit status
         return Response({
+            'payin_uuid': str(payin.payin_uuid),
+            'merchant_order_id': str(payin.merchant_order_id),
             'status': payin.status,
+            'pay_amount': str(payin.pay_amount) if payin.pay_amount else None,
+            'confirmed_amount': str(payin.confirmed_amount) if payin.confirmed_amount else None,
+            'utr': payin.utr,
+            'user_submitted_utr': payin.user_submitted_utr,
+            'code': payin.code,
+            'duration': payin.get_duration_display() if payin.duration else None,
+            'created_at': payin.created_at.isoformat() if payin.created_at else None,
+            'updated_at': payin.updated_at.isoformat() if payin.updated_at else None,
         }, status=status.HTTP_200_OK)
+
+    def get(self, request):
+        """Check payment status by payin_uuid or merchant_order_id (GET method)"""
+        return self._get_payment_status(request)
+
+    def post(self, request):
+        """Check payment status by payin_uuid or merchant_order_id (POST method)"""
+        return self._get_payment_status(request)
 
 
 class PayinPublicSessionView(APIView):
