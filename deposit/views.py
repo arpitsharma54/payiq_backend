@@ -403,6 +403,13 @@ class PayinCreatePaymentLinkView(APIView):
         user_id = request.data.get('user')
         merchant_order_id = request.data.get('merchant_order_id')
 
+        if merchant_order_id:
+            deposit = Payin.objects.filter(merchant_order_id=merchant_order_id, merchant=merchant, deleted_at=None).first()
+            if deposit:
+                return Response({
+                    'error': 'Merchant order ID already exists'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
         # Validate required fields
         if not user_id or (isinstance(user_id, str) and user_id.strip() == ''):
             return Response({
