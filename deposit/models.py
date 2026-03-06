@@ -76,7 +76,8 @@ class Payin(SoftDeleteModel):
     
     # Merchant order information
     merchant_order_id = models.UUIDField(
-        help_text="Merchant's order ID (UUID)"
+        unique=True,
+        help_text="Merchant's order ID (UUID, unique per payin)"
     )
     
     # Bank and payment details
@@ -199,19 +200,26 @@ class Payin(SoftDeleteModel):
             logger.error(f"Error updating bank account balance for payin {self.id}: {str(e)}")
     
     def save(self, *args, **kwargs):
-        """Override save to update bank account balance when status changes to success"""
+        """Override save to update bank account balance and send callbacks when status changes"""
         update_fields = kwargs.get('update_fields', None)
         status_changed_to_success = False
+        status_changed = False
+        old_status = None
         
-        # Check if this is an update and status is changing to success
+        # Check if this is an update and status is changing
         if self.pk:
             try:
                 old_instance = Payin.objects.get(pk=self.pk)
                 old_status = old_instance.status
                 
-                # If status is changing to success
-                if old_status != 'success' and self.status == 'success':
-                    status_changed_to_success = True
+                # Check if status is changing
+                if old_status != self.status:
+                    status_changed = True
+                    
+                    # If status is changing to success
+                    if old_status != 'success' and self.status == 'success':
+                        status_changed_to_success = True
+                    
                     # If update_fields is specified, make sure 'status' is included
                     if update_fields and 'status' not in update_fields:
                         # Add status to update_fields if it's being changed
@@ -226,3 +234,16 @@ class Payin(SoftDeleteModel):
         # Update bank account balance if status changed to success
         if status_changed_to_success:
             self.update_bank_account_balance()
+        
+        # Send merchant callback if status changed (for any status change)
+        if status_changed and old_status is not None:
+            try:
+                from deposit.utils import send_merchant_callback
+                send_merchant_callback(self)
+            except Exception as e:
+                # Log error but don't fail the save operation
+                logger.error(
+                    f"Payin {self.id}: Error sending callback after status change "
+                    f"from {old_status} to {self.status}: {str(e)}",
+                    exc_info=True
+                )

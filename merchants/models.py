@@ -192,7 +192,6 @@ class Merchant(SoftDeleteModel):
     site = models.URLField(max_length=500, help_text="Merchant site URL")
     return_url = models.URLField(max_length=500, blank=True, null=True, help_text="Return URL for merchant")
     callback_url = models.URLField(max_length=500, blank=True, null=True, help_text="Callback URL for merchant")
-    payout_callback_url = models.URLField(max_length=500, blank=True, null=True, help_text="Payout callback URL for merchant")
     api_key = models.CharField(max_length=255, unique=True, blank=True, help_text="API key for merchant (auto-generated)")
     
     # Balance field (can be negative)
