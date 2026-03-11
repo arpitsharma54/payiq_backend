@@ -714,29 +714,28 @@ class PayinPublicSessionView(APIView):
             # In production, save to S3 or similar storage
             pass
 
-        # Build callback URL with parameters
-        callback_url = None
-        if payin.merchant.callback_url:
-            callback_params = {
-                'payin_uuid': str(payin.payin_uuid),
-                'code': payin.code,
-                'status': payin.status,
-                'amount': str(payin.pay_amount) if payin.pay_amount else '0.00',
-                'utr': utr or '',
-            }
-            # Add merchant_order_id if available
-            if hasattr(payin, 'merchant_order_id') and payin.merchant_order_id:
-                callback_params['merchant_order_id'] = str(payin.merchant_order_id)
+        # Build return URL (merchant redirect after UTR submit) with parameters
+        return_url = None
+        if payin.merchant and payin.merchant.return_url:
+            # redirect_params = {
+            #     'payin_uuid': str(payin.payin_uuid),
+            #     'code': payin.code,
+            #     'status': payin.status,
+            #     'amount': str(payin.pay_amount) if payin.pay_amount else '0.00',
+            #     'utr': utr or '',
+            # }
+            # if hasattr(payin, 'merchant_order_id') and payin.merchant_order_id:
+            #     redirect_params['merchant_order_id'] = str(payin.merchant_order_id)
 
-            # Build URL with query parameters
-            separator = '&' if '?' in payin.merchant.callback_url else '?'
-            callback_url = f"{payin.merchant.callback_url}{separator}{urlencode(callback_params)}"
+            # separator = '&' if '?' in payin.merchant.return_url else '?'
+            return_url = f"{payin.merchant.return_url}"
+            # {separator}{urlencode(redirect_params)}"
 
         return Response({
             'message': 'Payment details submitted successfully',
             'session_id': str(payin.payin_uuid),
             'status': payin.status,
-            'callback_url': callback_url,
+            'return_url': return_url,
         }, status=status.HTTP_200_OK)
 
 
