@@ -50,15 +50,14 @@ async def check_logged_out(page) -> bool:
     Check if the 'logged out' or 'login denied' message is displayed on the page.
     These messages indicate the session is invalid and requires re-login.
     """
-
     try:
-        text = await page.inner_text("body")
-        logout_messages = [
-            "You are Logged OUT of internet banking due to",
-            "Login Denied",
-            "Your are NOT allowed to login due to"
-    ]
-        return any(msg in text for msg in logout_messages)
+        text = page.get_by_text("Successful logout")
+        text2 = page.get_by_text("Your session has expired")
+        if await text.is_visible():
+            return True
+        elif await text2.is_visible():
+            return True
+        return False
     except Exception:
         return False
 
@@ -130,9 +129,24 @@ def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
     Returns a list of ExtractedTransactions objects ready to be saved.
     """
     try:
+        # Find header row
+        header_row_index = 0
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if 'debit' in line.lower() and 'credit' in line.lower():
+                    header_row_index = i
+                    break
+
         # Read CSV file
-        df = pd.read_csv(csv_path)
-        logger.info(f"CSV file loaded: {len(df)} rows found")
+        df = pd.read_csv(csv_path, skiprows=header_row_index)
+        logger.info(f"CSV file loaded: {len(df)} rows found with headers at row {header_row_index}")
+
+        # Clean column names (strip whitespace)
+        df.columns = df.columns.str.strip()
+
+        if 'Debit' not in df.columns:
+            logger.error("Could not find 'Debit' column in CSV")
+            return []
 
         # Filter rows where Debit is NaN (credit transactions only)
         credit_transactions = df[df['Debit'].isna()].copy()
@@ -432,94 +446,63 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
     Returns the result of transaction extraction.
     """
     try:
-        # Navigate to Account statement page
-        await send_status('running', 'Navigating to account statement')
-
-        # Click on Account statement with retry logic
-        max_retries = 3
-        retry_count = 0
-        account_statement_clicked = False
-
-        while retry_count < max_retries and not account_statement_clicked:
-            # Check stop flag at start of each retry
-            await check_stop_and_raise(bank_account_id, send_status)
-            try:
-                # Try multiple selectors for Account statement
-                selectors = [
-                    "xpath=//a[contains(., 'Account statement')]",
-                    "xpath=//a[contains(., 'Account Statement')]",
-                    "xpath=//a[contains(., 'account statement')]",
-                    "xpath=//a[contains(@href, 'account') or contains(@href, 'statement')]",
-                ]
-
-                for selector in selectors:
-                    try:
-                        button = page.locator(selector)
-                        await button.wait_for(state="visible", timeout=10000)
-                        await button.click()
-                        logger.info(f'Account statement menu clicked using selector: {selector}')
-                        await send_status('running', 'Account statement menu clicked')
-                        account_statement_clicked = True
-                        break
-                    except Exception:
-                        continue
-
-                if not account_statement_clicked:
-                    raise Exception("Account statement link not found with any selector")
-
-            except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    logger.warning(f"Attempt {retry_count} failed to click Account statement: {str(e)}. Retrying...")
-                    await asyncio.sleep(2)
-                    await page.reload()
-                    await asyncio.sleep(3)
-                else:
-                    logger.error(f"Failed to click Account statement after {max_retries} attempts: {str(e)}")
-                    raise
-
-        await asyncio.sleep(5)
-
-        # Select account
-        await page.evaluate("""
-            const sel = document.querySelector('#accountNo');
-            sel.selectedIndex = 1;
-        """)
-        logger.info('Account number selected')
-        await send_status('running', 'Account number selected')
+        filter_statement_txt = await page.get_by_text("Filter statement").is_visible()
+        if not filter_statement_txt:
+            view_detailed_txn_button = page.get_by_role("button", name="View detailed statement")
+            await view_detailed_txn_button.click()
+            logger.info('View detailed statement button clicked')
+            await asyncio.sleep(1.5)
+            detailed_statement_button_locator = page.get_by_role("button", name="Detailed statement")
+            await detailed_statement_button_locator.wait_for(timeout=3000)
+            await detailed_statement_button_locator.click()
+            logger.info('Detailed statement button clicked')
+            await asyncio.sleep(1.5)
+        else:
+            home_btn = page.get_by_role("option", name="Home")
+            await home_btn.wait_for(timeout=3000)
+            await home_btn.click()
+            logger.info('Home button clicked')
+            await asyncio.sleep(1.5)
+            view_detailed_txn_button = page.get_by_role("button", name="View detailed statement")
+            await view_detailed_txn_button.wait_for(timeout=3000)
+            await view_detailed_txn_button.click()
+            logger.info('View detailed statement button clicked')
+            await asyncio.sleep(1.5)
+            detailed_statement_button_locator = page.get_by_role("button", name="Detailed statement")
+            await detailed_statement_button_locator.wait_for(timeout=3000)
+            await detailed_statement_button_locator.click()
+            logger.info('Detailed statement button clicked')
+            await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
+        custom_range_radio_button_locator = page.get_by_role("radio", name="Custom range")
+        await custom_range_radio_button_locator.wait_for(timeout=3000)
+        await custom_range_radio_button_locator.click()
+        await asyncio.sleep(2)
+        logger.info('Custom range radio button clicked')
 
         # Set from date (today's date)
         from datetime import datetime
-        today = datetime.now().strftime('%m/%d/%Y')
+        today = datetime.now().strftime('%d/%m/%Y')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%d/%m/%Y')
 
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('#fromDate');
-            el.removeAttribute('readonly');
-            el.value = '{today}';
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        }}""")
-        logger.info(f'From date set to {today}')
-        await send_status('running', f'From date set to {today}')
+        await page.locator("#fromDate input:visible").fill(yesterday)
+        await asyncio.sleep(2)
+        logger.info(f'From date set to {yesterday}')
+        await send_status('running', f'From date set to {yesterday}')
 
         # Set to date
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('#toDate');
-            el.removeAttribute('readonly');
-            el.value = '{today}';
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        }}""")
+        await page.locator("#toDate input:visible").fill(today)
         logger.info(f'To date set to {today}')
         await send_status('running', f'To date set to {today}')
 
         # Check stop flag before downloading statement
         await check_stop_and_raise(bank_account_id, send_status)
         # Click view button
-        await page.evaluate("() => { document.getElementById('accountstatement_view').click(); }")
+        apply_button_locator = page.get_by_role("button", name="Apply")
+        await apply_button_locator.wait_for(timeout=3000)
+        await apply_button_locator.click()
         await send_status('running', 'Clicking view button')
         await asyncio.sleep(5)
-
         # Check if there's no data to display - skip download and proceed to verification
         no_data_locator = page.locator("strong:has-text('Nothing found to display')")
         no_data_count = await no_data_locator.count()
@@ -529,7 +512,8 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
             return {"saved": 0, "skipped": 0, "errors": 0, "extracted": 0}
 
         # Wait for the CSV download button to be ready
-        csv_button = page.locator("#accountstatement_csvAcctStmt")
+        await page.get_by_role("button", name="Download Button press enter").click()
+        csv_button = page.get_by_role("menuitem", name="File type CSV Press enter key")
         await csv_button.wait_for(state="visible", timeout=10000)
 
         # Intercept download BEFORE clicking
@@ -588,44 +572,79 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
         captcha_attempt += 1
         logger.info(f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
         await send_status('running', f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
-
         try:
             await page.wait_for_load_state('domcontentloaded', timeout=10000)
-            await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
-            await page.wait_for_selector('#password', state='visible', timeout=5000)
+            await asyncio.sleep(1)
+            await page.get_by_role("button", name="Login | Register").click();
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning(f': Login | Register button not found: {str(e)}')
+        try:
+            await page.wait_for_load_state('domcontentloaded', timeout=10000)
+            await page.wait_for_selector('#captchaCanvas', state='visible', timeout=10000)
         except Exception as e:
             logger.warning(f'Timeout waiting for form elements: {str(e)}')
             await asyncio.sleep(2)
-
         # Fill login credentials
         try:
             if bank_account.login_type == 'corp':
                 await page.locator('#loginsubmit_loginId').fill(username)
                 await page.locator('#loginsubmit_userId').fill(username2)
             else:
-                await page.locator('#loginsubmit_loginId').fill(username)
+                await page.get_by_role("textbox", name="User ID").fill(username)
 
-            await page.locator('#password').fill(password)
+            await page.get_by_role("textbox", name="Password").fill(password)
             logger.info('Credentials filled successfully')
         except Exception as e:
             logger.warning(f'Error filling credentials: {str(e)}')
             await asyncio.sleep(1)
             continue
-
         # Extract and process captcha
         await send_status('running', 'Getting captcha image')
         try:
-            src = await page.evaluate('document.getElementById("captchaimg").src')
+            canvas = page.locator("#captchaCanvas")
+            await canvas.wait_for()
+            src = await canvas.evaluate("el => el.toDataURL('image/png')")
         except Exception as e:
             logger.warning(f'Error getting captcha image: {str(e)}')
             await asyncio.sleep(1)
             continue
-
         img_bytes = base64.b64decode(src.replace('data:image/png;base64,', ''))
         img_path = os.path.join(BOT_DIR, f"decoded_image_{bank_account_id}.png")
         with open(img_path, "wb") as f:
             f.write(img_bytes)
+        import cv2
+        import numpy as np
 
+        img = cv2.imread(img_path)
+
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 🔥 Strong contrast boost
+        gray = cv2.convertScaleAbs(gray, alpha=3, beta=0)
+
+        # Blur to smooth background pattern
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # Adaptive threshold (key fix for patterned background)
+        thresh = cv2.adaptiveThreshold(
+            blur,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            11,
+            2
+        )
+
+        # Remove small noise
+        kernel = np.ones((2,2), np.uint8)
+        clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        # Resize (VERY important)
+        clean = cv2.resize(clean, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+
+        cv2.imwrite(img_path, clean)
         await send_status('running', 'Extracting captcha text')
         result = OCR_MODEL.readtext(img_path)
         text = ''.join([detection[1] for detection in result])
@@ -636,13 +655,13 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
 
         # Fill captcha and submit
         try:
-            captcha_input = page.locator('#loginsubmit_captchaid')
+            captcha_input = page.get_by_role("textbox", name="Type the text shown above")
             await captcha_input.clear()
             await captcha_input.fill(cleaned_text.upper())
             await send_status('running', 'Filling captcha')
             await asyncio.sleep(4)
 
-            await page.locator('#btnSubmit').click()
+            await page.locator('#btn_loginConfirm').click()
             logger.info('Login button clicked')
             await send_status('running', 'Clicking login button')
         except Exception as e:
@@ -660,37 +679,28 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
         await asyncio.sleep(1)
 
         # Check for captcha error
-        current_url = page.url
-        if 'Captcha+entered+is+Incorrect' in current_url or 'errmsg=Captcha' in current_url:
-            logger.warning(f'Captcha incorrect on attempt {captcha_attempt}')
-            await send_status('running', f'Captcha incorrect, retrying ({captcha_attempt}/{max_captcha_retries})')
-            try:
-                await page.wait_for_load_state('domcontentloaded', timeout=10000)
-                await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
-            except Exception:
-                await asyncio.sleep(2)
+        has_error = await page.locator("#errMsg").is_visible(timeout=1000)
+        if has_error:
+            await page.get_by_role("button", name="Close").click()
+            logger.warning(f'Error message found on attempt {captcha_attempt}')
+            await send_status('running', f'Error message found, retrying ({captcha_attempt}/{max_captcha_retries})')
             continue
 
+
         # Check if login was successful
-        if 'corplogin' not in current_url:
-            logger.info('Login successful - no longer on login page')
+        login_button = page.get_by_role("button", name="UserId Login")
+
+        try:
+            # wait a bit to see if login button disappears
+            await login_button.wait_for(state="hidden", timeout=3000)
+            
+            logger.info('Login successful - login button disappeared')
             login_successful = True
             break
 
-        try:
-            await page.wait_for_selector("xpath=//a[contains(., 'Account statement')]", timeout=10000, state="visible")
-            logger.info('Login completed, Account statement link found')
-            await send_status('running', 'Login completed')
-            login_successful = True
-            break
-        except Exception:
-            if 'corplogin' in page.url:
-                logger.warning(f'Still on login page after attempt {captcha_attempt}')
-                try:
-                    await page.wait_for_selector('#captchaimg', state='visible', timeout=10000)
-                except Exception:
-                    await asyncio.sleep(2)
-                continue
+        except:
+            logger.info('Login failed - still on login page')
+            login_successful = False
 
     return login_successful
 
@@ -778,7 +788,7 @@ async def run_bot_for_account(bank_account_id: int):
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-zygote",
-                    "--window-size=1920,1080",
+                    "--window-size=1500,800",
                     "--disable-features=DownloadBubble,DownloadBubbleV2"
                 ]
             )
@@ -786,7 +796,7 @@ async def run_bot_for_account(bank_account_id: int):
             try:
                 # Create a new context with realistic settings
                 context = await browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
+                    viewport={"width": 1500, "height": 800},
                     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     ignore_https_errors=True,
                     accept_downloads=True,
@@ -875,7 +885,6 @@ async def run_bot_for_account(bank_account_id: int):
                         await check_stop_and_raise(bank_account_id, send_status)
                         verify_result = await verify_transactions(send_status)
                         logger.info(f"Iteration {iteration} verification completed: {verify_result}")
-
                     except BotStoppedException:
                         raise
                     except Exception as e:
