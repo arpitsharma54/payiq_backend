@@ -183,7 +183,6 @@ services:
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
     volumes:
       - logs_data:/app/logs
-      - playwright_cache:/root/.cache/ms-playwright
     depends_on:
       db:
         condition: service_healthy
@@ -191,6 +190,33 @@ services:
         condition: service_healthy
     networks:
       - payiq_network
+    develop:
+      watch:
+        - path: ./accounts
+          action: sync
+          target: /app/accounts
+        - path: ./core
+          action: sync
+          target: /app/core
+        - path: ./deposit
+          action: sync
+          target: /app/deposit
+        - path: ./merchants
+          action: sync
+          target: /app/merchants
+        - path: ./payiq
+          action: sync
+          target: /app/payiq
+        - path: ./settlements
+          action: sync
+          target: /app/settlements
+        - path: ./ws
+          action: sync
+          target: /app/ws
+        - path: ./requirements-celery.txt
+          action: rebuild
+        - path: ./requirements-base.txt
+          action: rebuild
 
 volumes:
   postgres_data:
@@ -199,7 +225,6 @@ volumes:
   logs_data:
   certbot_webroot:
   certbot_certs:
-  playwright_cache:
 
 networks:
   payiq_network:

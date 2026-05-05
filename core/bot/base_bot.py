@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
     """Send status updates via WebSocket"""
     channel_layer = get_channel_layer()
+    if not channel_layer:
+        logger.warning("Channel layer not configured, skipping WebSocket status update")
+        return
+
     payload = {
         "type": "task_update",
         "status": status,
@@ -70,7 +74,12 @@ def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
     try:
         # Read CSV file
         df = pd.read_csv(csv_path)
+        df.columns = df.columns.str.strip()  # remove leading/trailing whitespace from column names
         logger.info(f"CSV file loaded: {len(df)} rows found")
+
+        if 'Debit' not in df.columns or 'Credit' not in df.columns:
+            logger.error(f"Required columns missing. Found: {list(df.columns)}")
+            return []
 
         # Filter rows where Debit is NaN (credit transactions only)
         credit_transactions = df[df['Debit'].isna()].copy()
@@ -236,6 +245,7 @@ class BaseBankBot(ABC):
         self.bank_account_id = bank_account_id
         self.bank_account = None
         self.merchant_id = None
+        self.playwright = None
         self.browser = None
         self.page = None
         self.context = None
@@ -252,8 +262,8 @@ class BaseBankBot(ABC):
 
     async def launch_browser(self, headless: bool = True):
         """Launch browser with standard configuration"""
-        playwright = await async_playwright().start()
-        self.browser = await playwright.chromium.launch(
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
             headless=headless,
             args=[
                 "--no-sandbox",
@@ -300,13 +310,18 @@ class BaseBankBot(ABC):
         logger.info("Browser launched successfully")
 
     async def close_browser(self):
-        """Close browser safely"""
+        """Close browser and stop the Playwright instance safely"""
         if self.browser:
             try:
                 await self.browser.close()
                 logger.info("Browser closed")
             except Exception as e:
                 logger.warning(f"Error closing browser: {str(e)}")
+        if self.playwright:
+            try:
+                await self.playwright.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {str(e)}")
 
     async def save_screenshot(self, filename: str = None):
         """Save a screenshot for debugging"""

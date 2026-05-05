@@ -5,11 +5,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 from deposit.models import Payin
 from playwright.async_api import async_playwright
-import base64
+from PIL import Image, ImageEnhance
 import easyocr
 from merchants.models import BankAccount, ExtractedTransactions
 from asgiref.sync import sync_to_async
-logger = logging.getLogger(__name__)
 from django.db import transaction
 from django.utils import timezone
 from django.conf import settings
@@ -17,32 +16,23 @@ from channels.layers import get_channel_layer
 import redis
 import os
 
-# Get the directory where this bot file is located
+logger = logging.getLogger(__name__)
+
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Initialize once per Celery worker
 OCR_MODEL = easyocr.Reader(['en'], gpu=False)
-
-# Redis client for checking stop flag
 redis_client = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
-
-# Get bot execution interval from settings (default: 30 seconds)
 BOT_INTERVAL = getattr(settings, 'BOT_EXECUTION_INTERVAL', 30)
+
+MAX_RELOGIN_ATTEMPTS = 5
+RELOGIN_DELAY_SECONDS = 3
 
 
 class BotStoppedException(Exception):
-    """Exception raised when bot is stopped by user."""
     pass
 
 
 class LoggedOutException(Exception):
-    """Exception raised when session logout is detected."""
     pass
-
-
-# Constants for relogin
-MAX_RELOGIN_ATTEMPTS = 5
-RELOGIN_DELAY_SECONDS = 3
 
 
 async def check_logged_out(page) -> bool:
@@ -62,17 +52,14 @@ async def check_logged_out(page) -> bool:
         return False
 
 
-
 def check_stop_flag(bank_account_id: int) -> bool:
-    """Check if stop flag is set for the given bank account."""
     stop_flag_key = f'bot_stop_flag_{bank_account_id}'
     return redis_client.get(stop_flag_key) is not None
 
 
 async def check_stop_and_raise(bank_account_id: int, send_status=None):
-    """Check stop flag and raise exception if set."""
     if check_stop_flag(bank_account_id):
-        logger.info(f"Stop flag detected for bank account {bank_account_id}. Stopping bot immediately.")
+        logger.info(f"Stop flag detected for bank account {bank_account_id}")
         if send_status:
             await send_status('stopped', 'Bot stopped by user request')
         raise BotStoppedException(f"Bot stopped by user request for account {bank_account_id}")
@@ -90,46 +77,41 @@ async def send_status_to_websocket(status, message="", merchant_id=None, bank_ac
     if bank_account_id:
         payload["bank_account_id"] = bank_account_id
 
-    await channel_layer.group_send(
-        "task_status_updates",
-        payload,
-    )
+    await channel_layer.group_send("task_status_updates", payload)
 
 
 def extract_utr_from_text(text: str) -> str | None:
-    """
-    Extract UTR from transaction text.
-    UTR patterns: 4-6 uppercase letters followed by 8-16 digits, or 10-16 digits
-    """
     if not text or not isinstance(text, str):
         return None
 
-    # Try multiple UTR patterns
     patterns = [
-        r'\b([A-Z]{4,6}\d{8,16})\b',  # UPI reference like IMPS123456789012
-        r'\b(\d{10,16})\b',  # Numeric UTR like 123456789012
-        r'UPI/(\d{12})',  # UPI format like UPI/531500483153
-        r'IMPS/(\d{12})',  # IMPS format
+        r'\b([A-Z]{4,6}\d{8,16})\b',
+        r'\b(\d{10,16})\b',
+        r'UPI/(\d{12})',
+        r'IMPS/(\d{12})',
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             utr = match.group(1)
-            # Validate UTR length
             if 10 <= len(utr) <= 16:
                 return utr
 
     return None
 
 
+def preprocess_captcha(img_path: str) -> str:
+    img = Image.open(img_path).convert("L")
+    img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+    processed_path = img_path.replace(".png", "_processed.png")
+    img.save(processed_path)
+    return processed_path
+
+
 def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
-    """
-    Process CSV file and extract credit transactions.
-    Returns a list of ExtractedTransactions objects ready to be saved.
-    """
     try:
-        # Find header row
         header_row_index = 0
         with open(csv_path, 'r', encoding='utf-8') as f:
             for i, line in enumerate(f):
@@ -137,69 +119,58 @@ def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
                     header_row_index = i
                     break
 
-        # Read CSV file
         df = pd.read_csv(csv_path, skiprows=header_row_index)
-        logger.info(f"CSV file loaded: {len(df)} rows found with headers at row {header_row_index}")
+        logger.info(f"CSV loaded: {len(df)} rows, header at row {header_row_index}")
 
-        # Clean column names (strip whitespace)
         df.columns = df.columns.str.strip()
 
         if 'Debit' not in df.columns:
             logger.error("Could not find 'Debit' column in CSV")
             return []
 
-        # Filter rows where Debit is NaN (credit transactions only)
         credit_transactions = df[df['Debit'].isna()].copy()
         logger.info(f"Credit transactions found: {len(credit_transactions)}")
 
         if credit_transactions.empty:
-            logger.warning("No credit transactions found in CSV")
+            logger.warning("No credit transactions in CSV")
             return []
 
-        # Get bank account and merchant
         bank_account = BankAccount.objects.select_related('merchant').get(id=bank_account_id)
         merchant = bank_account.merchant
 
         transactions = []
         skipped_count = 0
 
-        # Process each transaction
         for index, row in credit_transactions.iterrows():
             try:
-                # Get credit amount
                 credit_amount = row.get('Credit', 0)
                 if pd.isna(credit_amount) or credit_amount <= 0:
                     skipped_count += 1
                     continue
 
-                # Extract UTR from Narration column (most likely to contain UTR)
                 narration = str(row.get('Narration', ''))
                 utr = extract_utr_from_text(narration)
 
                 if not utr:
-                    # Try other columns if Narration doesn't have UTR
                     description = str(row.get('Description', ''))
                     remarks = str(row.get('Remarks', ''))
-                    combined_text = f"{description} {remarks} {narration}"
-                    utr = extract_utr_from_text(combined_text)
+                    utr = extract_utr_from_text(f"{description} {remarks} {narration}")
 
                 if not utr:
-                    logger.debug(f"Skipping transaction at row {index}: No UTR found. Narration: {narration[:50]}")
+                    logger.debug(f"Row {index}: No UTR found. Narration: {narration[:50]}")
                     skipped_count += 1
                     continue
 
-                # Validate amount
                 try:
                     amount = int(float(credit_amount))
                     if amount <= 0:
                         skipped_count += 1
                         continue
                 except (ValueError, TypeError):
-                    logger.warning(f"Invalid amount format at row {index}: {credit_amount}")
+                    logger.warning(f"Row {index}: Invalid amount {credit_amount}")
                     skipped_count += 1
                     continue
 
-                # Create transaction object
                 transactions.append(ExtractedTransactions(
                     bank_account=bank_account,
                     merchant=merchant,
@@ -208,11 +179,11 @@ def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
                 ))
 
             except Exception as e:
-                logger.warning(f"Error processing row {index}: {str(e)}")
+                logger.warning(f"Error processing row {index}: {e}")
                 skipped_count += 1
                 continue
 
-        logger.info(f"Successfully extracted {len(transactions)} transactions, skipped {skipped_count}")
+        logger.info(f"Extracted {len(transactions)} transactions, skipped {skipped_count}")
         return transactions
 
     except FileNotFoundError:
@@ -222,21 +193,16 @@ def process_csv_transactions(csv_path: str, bank_account_id: int) -> list:
         logger.error("CSV file is empty")
         return []
     except Exception as e:
-        logger.error(f"Error processing CSV file: {str(e)}", exc_info=True)
+        logger.error(f"Error processing CSV: {e}", exc_info=True)
         return []
 
 
 async def save_extracted_transactions(transactions: list) -> dict:
-    """
-    Save extracted transactions to database with duplicate checking.
-    Returns a dict with success count and skipped count.
-    """
     if not transactions:
         logger.warning("No transactions to save")
         return {"saved": 0, "skipped": 0, "errors": 0}
 
     try:
-        # Check for existing transactions to avoid duplicates (within the same merchant)
         def check_and_save():
             merchant = transactions[0].merchant
             existing_utrs = set(
@@ -246,23 +212,13 @@ async def save_extracted_transactions(transactions: list) -> dict:
                 ).values_list('utr', flat=True)
             )
 
-            # Filter out duplicates
-            new_transactions = [
-                t for t in transactions
-                if t.utr not in existing_utrs
-            ]
+            new_transactions = [t for t in transactions if t.utr not in existing_utrs]
 
             if not new_transactions:
-                logger.info("All transactions already exist in database")
-                return {
-                    "saved": 0,
-                    "skipped": len(transactions),
-                    "errors": 0
-                }
+                logger.info("All transactions already exist in DB")
+                return {"saved": 0, "skipped": len(transactions), "errors": 0}
 
-            # Bulk create new transactions
             ExtractedTransactions.objects.bulk_create(new_transactions, ignore_conflicts=True)
-
             return {
                 "saved": len(new_transactions),
                 "skipped": len(transactions) - len(new_transactions),
@@ -270,60 +226,47 @@ async def save_extracted_transactions(transactions: list) -> dict:
             }
 
         result = await sync_to_async(check_and_save)()
-        logger.info(f"Transactions saved: {result['saved']}, skipped (duplicates): {result['skipped']}")
+        logger.info(f"Saved: {result['saved']}, skipped (duplicates): {result['skipped']}")
         return result
 
     except Exception as e:
-        logger.error(f"Error saving transactions to database: {str(e)}", exc_info=True)
+        logger.error(f"Error saving transactions: {e}", exc_info=True)
         return {"saved": 0, "skipped": 0, "errors": len(transactions)}
 
 
 async def extract_and_save_transactions(csv_path: str, bank_account_id: int) -> dict:
-    """
-    Main function to extract transactions from CSV and save to database.
-    Handles the entire process with proper error handling.
-    """
     try:
-        # Process CSV in thread pool (pandas is synchronous)
-        transactions = await asyncio.to_thread(
-            process_csv_transactions,
-            csv_path,
-            bank_account_id
-        )
+        transactions = await asyncio.to_thread(process_csv_transactions, csv_path, bank_account_id)
 
         if not transactions:
             logger.warning("No transactions extracted from CSV")
             return {"saved": 0, "skipped": 0, "errors": 0, "extracted": 0}
 
-        # Save to database
         result = await save_extracted_transactions(transactions)
         result["extracted"] = len(transactions)
-
         return result
 
     except Exception as e:
-        logger.error(f"Error in extract_and_save_transactions: {str(e)}", exc_info=True)
+        logger.error(f"Error in extract_and_save_transactions: {e}", exc_info=True)
         return {"saved": 0, "skipped": 0, "errors": 1, "extracted": 0}
 
 
 async def verify_transactions(send_status) -> dict:
-    """
-    Verify pending payins against extracted transactions.
-    Called after each statement download.
-    """
     await send_status('running', 'Verifying transactions...')
-    logger.info("Starting transaction verification...")
+    logger.info("Starting transaction verification")
 
     try:
         def do_verification():
             assigned_payins = Payin.objects.filter(status='assigned')
-            expired_initiated_payins = Payin.objects.filter(status='initiated', created_at__lte=timezone.now() - timedelta(minutes=11))
-            logger.info(f"Found {assigned_payins.count()} assigned payins to verify")
-            logger.info(f"Found {expired_initiated_payins.count()} expired initiated payins to verify")
+            expired_initiated_payins = Payin.objects.filter(
+                status='initiated',
+                created_at__lte=timezone.now() - timedelta(minutes=11)
+            )
+            logger.info(f"Assigned payins: {assigned_payins.count()}, expired initiated: {expired_initiated_payins.count()}")
 
-            for expired_initiated_payin in expired_initiated_payins:
-                expired_initiated_payin.status = 'dropped'
-                expired_initiated_payin.save()
+            for payin in expired_initiated_payins:
+                payin.status = 'dropped'
+                payin.save()
 
             verified_count = 0
             duplicate_count = 0
@@ -347,17 +290,12 @@ async def verify_transactions(send_status) -> dict:
                         ).first()
 
                         if not transaction_obj:
-                            logger.debug(f"Payin {payin.id}: No matching transaction found for UTR {payin.user_submitted_utr}")
+                            logger.debug(f"Payin {payin.id}: No matching transaction for UTR {payin.user_submitted_utr}")
                             not_found_count += 1
                             continue
 
-                        logger.debug(f"Payin {payin.id}: Found transaction {transaction_obj.id} with UTR {transaction_obj.utr}")
-
                         if transaction_obj.is_used:
-                            logger.warning(
-                                f"Payin {payin.id}: Transaction {transaction_obj.id} (UTR: {transaction_obj.utr}) "
-                                f"is already used. Marking payin as duplicate."
-                            )
+                            logger.warning(f"Payin {payin.id}: UTR {transaction_obj.utr} already used — marking duplicate")
                             payin.status = 'duplicate'
                             if hasattr(payin, 'assigned_at') and payin.assigned_at:
                                 payin.duration = timezone.now() - payin.assigned_at
@@ -366,9 +304,8 @@ async def verify_transactions(send_status) -> dict:
 
                         elif transaction_obj.amount != int(float(payin.pay_amount or 0)):
                             logger.warning(
-                                f"Payin {payin.id}: Amount mismatch. "
-                                f"Payin amount: {payin.pay_amount}, Transaction amount: {transaction_obj.amount}. "
-                                f"Marking payin as dropped."
+                                f"Payin {payin.id}: Amount mismatch — "
+                                f"payin={payin.pay_amount}, transaction={transaction_obj.amount} — marking dropped"
                             )
                             payin.status = 'dropped'
                             payin.amount = transaction_obj.amount
@@ -378,39 +315,34 @@ async def verify_transactions(send_status) -> dict:
                             dropped_count += 1
 
                         else:
-                            logger.info(
-                                f"Payin {payin.id}: Transaction {transaction_obj.id} is valid. "
-                                f"Amount: {transaction_obj.amount}, UTR: {transaction_obj.utr}"
-                            )
-
+                            logger.info(f"Payin {payin.id}: Verified — amount={transaction_obj.amount}, UTR={transaction_obj.utr}")
                             transaction_obj.is_used = True
                             transaction_obj.save(update_fields=['is_used'])
 
                             payin.status = 'success'
                             payin.confirmed_amount = payin.pay_amount
                             payin.utr = transaction_obj.utr
-
                             if hasattr(payin, 'assigned_at') and payin.assigned_at:
                                 payin.duration = timezone.now() - payin.assigned_at
-
                             payin.save(update_fields=['status', 'confirmed_amount', 'duration', 'utr'])
                             verified_count += 1
 
                 except Payin.DoesNotExist:
                     logger.warning(f"Payin {payin.id} no longer exists, skipping")
                     error_count += 1
-                    continue
                 except Exception as e:
-                    logger.error(f"Error verifying payin {payin.id}: {str(e)}", exc_info=True)
+                    logger.error(f"Error verifying payin {payin.id}: {e}", exc_info=True)
                     error_count += 1
-                    continue
-            
-            expired_assigned_payins = Payin.objects.filter(status='assigned', created_at__lte=timezone.now() - timedelta(minutes=11))
-            logger.info(f"Found {expired_assigned_payins.count()} expired assigned payins to verify")
-            for expired_assigned_payin in expired_assigned_payins:
-                expired_assigned_payin.status = 'dropped'
-                expired_assigned_payin.save()
+
+            expired_assigned_payins = Payin.objects.filter(
+                status='assigned',
+                created_at__lte=timezone.now() - timedelta(minutes=11)
+            )
+            for payin in expired_assigned_payins:
+                payin.status = 'dropped'
+                payin.save()
             logger.info(f"Dropped {expired_assigned_payins.count()} expired assigned payins")
+
             return {
                 "verified": verified_count,
                 "duplicates": duplicate_count,
@@ -421,355 +353,295 @@ async def verify_transactions(send_status) -> dict:
             }
 
         result = await sync_to_async(do_verification)()
-
         logger.info(
-            f"Transaction verification completed - "
-            f"Verified: {result['verified']}, "
-            f"Duplicates: {result['duplicates']}, "
-            f"Dropped: {result['dropped']}, "
-            f"Not found: {result['not_found']}, "
-            f"Errors: {result['errors']}"
+            f"Verification done — verified={result['verified']}, duplicates={result['duplicates']}, "
+            f"dropped={result['dropped']}, not_found={result['not_found']}, errors={result['errors']}"
         )
-
         await send_status('running', f"Verified: {result['verified']} transactions")
         return result
 
     except Exception as e:
-        logger.error(f"Error in transaction verification: {str(e)}", exc_info=True)
-        await send_status('error', f'Verification error: {str(e)}')
+        logger.error(f"Error in transaction verification: {e}", exc_info=True)
+        await send_status('error', f'Verification error: {e}')
         return {"verified": 0, "duplicates": 0, "dropped": 0, "not_found": 0, "errors": 1, "total": 0}
 
 
-async def download_statement(page, bank_account_id: int, send_status) -> dict:
-    """
-    Download and process statement. This is called in a loop.
-    Returns the result of transaction extraction.
-    """
-    try:
-        filter_statement_txt = await page.get_by_text("Filter statement").is_visible()
-        if not filter_statement_txt:
-            view_detailed_txn_button = page.get_by_role("button", name="View detailed statement")
-            await view_detailed_txn_button.click()
-            logger.info('View detailed statement button clicked')
-            await asyncio.sleep(1.5)
-            detailed_statement_button_locator = page.get_by_role("button", name="Detailed statement")
-            await detailed_statement_button_locator.wait_for(timeout=3000)
-            await detailed_statement_button_locator.click()
-            logger.info('Detailed statement button clicked')
-            await asyncio.sleep(1.5)
-        else:
-            home_btn = page.get_by_role("option", name="Home")
-            await home_btn.wait_for(timeout=3000)
-            await home_btn.click()
-            logger.info('Home button clicked')
-            await asyncio.sleep(1.5)
-            view_detailed_txn_button = page.get_by_role("button", name="View detailed statement")
-            await view_detailed_txn_button.wait_for(timeout=3000)
-            await view_detailed_txn_button.click()
-            logger.info('View detailed statement button clicked')
-            await asyncio.sleep(1.5)
-            detailed_statement_button_locator = page.get_by_role("button", name="Detailed statement")
-            await detailed_statement_button_locator.wait_for(timeout=3000)
-            await detailed_statement_button_locator.click()
-            logger.info('Detailed statement button clicked')
-            await asyncio.sleep(1.5)
-        await asyncio.sleep(2)
-        custom_range_radio_button_locator = page.get_by_role("radio", name="Custom range")
-        await custom_range_radio_button_locator.wait_for(timeout=3000)
-        await custom_range_radio_button_locator.click()
-        await asyncio.sleep(2)
-        logger.info('Custom range radio button clicked')
+async def perform_login(page, bank_account, send_status, bank_account_id: int) -> bool:
+    username = bank_account.username or ''
+    password = bank_account.password or ''
+    max_captcha_retries = 10
 
-        # Set from date (today's date)
-        from datetime import datetime
-        today = datetime.now().strftime('%d/%m/%Y')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%d/%m/%Y')
-
-        await page.locator("#fromDate input:visible").fill(yesterday)
-        await asyncio.sleep(2)
-        logger.info(f'From date set to {yesterday}')
-        await send_status('running', f'From date set to {yesterday}')
-
-        # Set to date
-        await page.locator("#toDate input:visible").fill(today)
-        logger.info(f'To date set to {today}')
-        await send_status('running', f'To date set to {today}')
-
-        # Check stop flag before downloading statement
+    for captcha_attempt in range(1, max_captcha_retries + 1):
         await check_stop_and_raise(bank_account_id, send_status)
-        # Click view button
-        apply_button_locator = page.get_by_role("button", name="Apply")
-        await apply_button_locator.wait_for(timeout=3000)
-        await apply_button_locator.click()
-        await send_status('running', 'Clicking view button')
-        await asyncio.sleep(5)
-        # Check if there's no data to display - skip download and proceed to verification
+        logger.info(f"Captcha attempt {captcha_attempt}/{max_captcha_retries}")
+        await send_status('running', f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
+
+        # Click login page redirection button — only on the landing page
+        try:
+            login_redirect_btn = await page.wait_for_selector('#login_page_redirection_button', timeout=10000)
+            await login_redirect_btn.click()
+            # domcontentloaded is enough — the form is in the initial HTML, not lazy-loaded
+            await page.wait_for_load_state('domcontentloaded', timeout=15000)
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Login redirect button not found (may already be on form): {e}")
+
+        # Fill user ID — wait_for_selector polls until element is in DOM, no extra networkidle needed
+        try:
+            result = await page.evaluate("""
+            () => {
+            const el = document.querySelector('paper-input');
+            return {
+                exists: !!el,
+                hasShadow: !!el?.shadowRoot,
+                shadowChildren: el?.shadowRoot?.children.length || 0
+            };
+            }
+            """)
+            print("DEBUG:", result)
+            user_id_input = page.locator('paper-input').locator('input').first
+            await user_id_input.wait_for(timeout=30000)
+            await user_id_input.fill(username)
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Error filling user ID: {e}")
+            continue
+
+        # Fill password
+        try:
+            password_input = page.get_by_role("textbox", name="Password")
+            await password_input.type(password)
+            logger.info("Credentials filled")
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Error filling password: {e}")
+            continue
+
+        # Capture captcha — wait_for_selector handles when it's ready
+        await send_status('running', 'Capturing captcha image')
+        try:
+            canvas = await page.wait_for_selector('#captchaCanvas', timeout=30000)
+            img_path = os.path.join(BOT_DIR, f"captcha_{bank_account_id}.png")
+            await canvas.screenshot(path=img_path)
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Error capturing captcha: {e}")
+            continue
+
+        processed_path = preprocess_captcha(img_path)
+        await send_status('running', 'Extracting captcha text')
+
+        results = OCR_MODEL.readtext(
+            processed_path,
+            detail=0,
+            allowlist='0123456789',
+            text_threshold=0.5,
+            low_text=0.3,
+            width_ths=1.0,
+            paragraph=False,
+        )
+        captcha_text = ''.join(''.join(results).split())
+        logger.info(f"Captcha extracted: '{captcha_text}'")
+
+        # Fill captcha and submit
+        try:
+            captcha_input = await page.wait_for_selector('input[aria-labelledby="paper-input-label-4"]', timeout=30000)
+            await captcha_input.type(captcha_text)
+            submit_button = await page.wait_for_selector('#btn_loginConfirm', timeout=30000)
+            await submit_button.click()
+            await send_status('running', 'Submitting login')
+            logger.info("Login button clicked")
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Error submitting login form: {e}")
+            continue
+
+        # Wait for post-submit navigation — domcontentloaded is enough to check outcome
+        try:
+            await page.wait_for_load_state('domcontentloaded', timeout=20000)
+        except Exception as e:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.warning(f"Timeout after login submit: {e}")
+
+        await asyncio.sleep(1)
+
+        # Check for error message
+        has_error = await page.locator("#errMsg").is_visible(timeout=1000)
+        if has_error:
+            try:
+                await page.get_by_role("button", name="Close").click()
+            except Exception:
+                await page.screenshot(path="debug.png", full_page=True)
+                pass
+            logger.warning(f"Login error on attempt {captcha_attempt}")
+            await send_status('running', f'Login error, retrying ({captcha_attempt}/{max_captcha_retries})')
+            continue
+
+        # Confirm login succeeded by checking login button is gone
+        login_button = page.get_by_role("button", name="UserId Login")
+        try:
+            await login_button.wait_for(state="hidden", timeout=3000)
+            logger.info("Login successful")
+            return True
+        except Exception:
+            await page.screenshot(path="debug.png", full_page=True)
+            logger.info("Login failed — still on login page")
+
+    return False
+
+
+async def download_statement(page, bank_account_id: int, send_status) -> dict:
+    """Navigate from the Accounts menu each iteration, download CSV, extract and save transactions."""
+    try:
+
+        # Accounts menu
+        await send_status('running', 'Navigating to Accounts')
+        await page.locator("#desktop_nav_menu_1 > .content-align-vertical-center").click()
+        logger.info("Accounts menu clicked")
+
+        # Operative accounts
+        await page.get_by_role("link", name="Operative accounts").wait_for(state="visible")
+        await page.get_by_role("link", name="Operative accounts").click()
+        await page.wait_for_load_state("domcontentloaded")
+        logger.info("Operative accounts clicked")
+
+        # Account card
+        await send_status('running', 'Selecting account card')
+        await page.locator("opr-account-card").first.click()
+        logger.info("Account card clicked")
+
+        # Recent transactions tab
+        await page.get_by_role("tablist").get_by_text("Recent transactions").wait_for(state="visible")
+        await page.get_by_role("tablist").get_by_text("Recent transactions").click()
+        await page.wait_for_load_state("domcontentloaded")
+        logger.info("Recent transactions tab clicked")
+
+        # Detailed statement button
+        await send_status('running', 'Opening detailed statement')
+        await page.get_by_role("button", name="Detailed statement").wait_for(state="visible")
+        await page.get_by_role("button", name="Detailed statement").click()
+        await page.wait_for_load_state("domcontentloaded")
+        logger.info("Detailed statement button clicked")
+
+        # Custom range
+        await page.get_by_role("radio", name="Custom range").wait_for(state="visible")
+        await page.get_by_role("radio", name="Custom range").click()
+        await page.wait_for_load_state("domcontentloaded")
+        logger.info("Custom range selected")
+
+        # Set dates
+        today = datetime.now().strftime('%d/%m/%Y')
+        yesterday = (datetime.now() - timedelta(days=3)).strftime('%d/%m/%Y')
+
+        await page.get_by_label("From date").first.fill(yesterday)
+        logger.info(f"From date: {yesterday}")
+        await send_status('running', f'From date: {yesterday}')
+
+        await page.get_by_label("To date").first.fill(today)
+        logger.info(f"To date: {today}")
+        await send_status('running', f'To date: {today}')
+
+        await check_stop_and_raise(bank_account_id, send_status)
+
+        # Apply
+        await page.get_by_role("button", name="Apply").wait_for(state="visible")
+        await page.get_by_role("button", name="Apply").click()
+        await page.wait_for_load_state("domcontentloaded")
+        logger.info("Apply button clicked")
+        await send_status('running', 'Applying date filter')
+
+        # Check for no data
         no_data_locator = page.locator("strong:has-text('Nothing found to display')")
-        no_data_count = await no_data_locator.count()
-        if no_data_count > 0:
-            logger.info("No transactions found to display, skipping CSV download")
+        if await no_data_locator.count() > 0:
+            logger.info("No transactions to display, skipping download")
             await send_status('running', 'No transactions found, proceeding to verification')
             return {"saved": 0, "skipped": 0, "errors": 0, "extracted": 0}
 
-        # Wait for the CSV download button to be ready
+        # Download CSV — intercept download before clicking
+        await page.get_by_role("button", name="Download Button press enter").wait_for(state="visible")
         await page.get_by_role("button", name="Download Button press enter").click()
-        csv_button = page.get_by_role("menuitem", name="File type CSV Press enter key")
-        await csv_button.wait_for(state="visible", timeout=10000)
+        await page.wait_for_load_state("domcontentloaded")
 
-        # Intercept download BEFORE clicking
+        await page.get_by_role("listbox").get_by_text("CSV").wait_for(state="visible")
+
         async with page.expect_download() as download_info:
-            await csv_button.click()
-            logger.info('CSV download button clicked')
+            await page.get_by_role("listbox").get_by_text("CSV").click()
+            logger.info("CSV download initiated")
 
-        # Get the intercepted download
         download = await download_info.value
-        await send_status('running', 'CSV button clicked')
-
-        # Save the file
         csv_path = os.path.join(BOT_DIR, f"statement_{bank_account_id}.csv")
         await download.save_as(csv_path)
-        await send_status('running', 'CSV file saved')
-        logger.info(f"CSV file saved as {csv_path}")
+        logger.info(f"CSV saved to {csv_path}")
+        await send_status('running', 'CSV downloaded, processing transactions')
 
-        # Extract and save transactions from CSV
         result = await extract_and_save_transactions(csv_path, bank_account_id)
         logger.info(
-            f"Transaction processing completed for bank account {bank_account_id} - "
-            f"Extracted: {result.get('extracted', 0)}, "
-            f"Saved: {result.get('saved', 0)}, "
-            f"Skipped: {result.get('skipped', 0)}, "
-            f"Errors: {result.get('errors', 0)}"
+            f"Account {bank_account_id} — extracted={result.get('extracted', 0)}, "
+            f"saved={result.get('saved', 0)}, skipped={result.get('skipped', 0)}, "
+            f"errors={result.get('errors', 0)}"
         )
-        await send_status('running', f"Processed: {result.get('saved', 0)} new transactions")
-
+        await send_status('running', f"Saved {result.get('saved', 0)} new transactions")
         return result
 
     except BotStoppedException:
         raise
     except Exception as e:
-        logger.error(f"Error downloading statement: {str(e)}", exc_info=True)
-        await send_status('error', f'Error downloading statement: {str(e)}')
-
-
-async def perform_login(page, bank_account, send_status, bank_account_id: int) -> bool:
-    """
-    Perform login with captcha retry logic.
-    Returns True if login successful, False otherwise.
-    """
-    # Get login credentials
-    username = bank_account.username or ''
-    username2 = bank_account.username2 or ''
-    password = bank_account.password or ''
-
-    # Captcha retry loop
-    max_captcha_retries = 10
-    captcha_attempt = 0
-    login_successful = False
-
-    while captcha_attempt < max_captcha_retries and not login_successful:
-        await check_stop_and_raise(bank_account_id, send_status)
-
-        captcha_attempt += 1
-        logger.info(f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
-        await send_status('running', f'Captcha attempt {captcha_attempt}/{max_captcha_retries}')
-        try:
-            await page.wait_for_load_state('domcontentloaded', timeout=10000)
-            await asyncio.sleep(1)
-            await page.get_by_role("button", name="Login | Register").click();
-            await asyncio.sleep(1)
-        except Exception as e:
-            logger.warning(f': Login | Register button not found: {str(e)}')
-        try:
-            await page.wait_for_load_state('domcontentloaded', timeout=10000)
-            await page.wait_for_selector('#captchaCanvas', state='visible', timeout=10000)
-        except Exception as e:
-            logger.warning(f'Timeout waiting for form elements: {str(e)}')
-            await asyncio.sleep(2)
-        # Fill login credentials
-        try:
-            if bank_account.login_type == 'corp':
-                await page.locator('#loginsubmit_loginId').fill(username)
-                await page.locator('#loginsubmit_userId').fill(username2)
-            else:
-                await page.get_by_role("textbox", name="User ID").fill(username)
-
-            await page.get_by_role("textbox", name="Password").fill(password)
-            logger.info('Credentials filled successfully')
-        except Exception as e:
-            logger.warning(f'Error filling credentials: {str(e)}')
-            await asyncio.sleep(1)
-            continue
-        # Extract and process captcha
-        await send_status('running', 'Getting captcha image')
-        try:
-            canvas = page.locator("#captchaCanvas")
-            await canvas.wait_for()
-            src = await canvas.evaluate("el => el.toDataURL('image/png')")
-        except Exception as e:
-            logger.warning(f'Error getting captcha image: {str(e)}')
-            await asyncio.sleep(1)
-            continue
-        img_bytes = base64.b64decode(src.replace('data:image/png;base64,', ''))
-        img_path = os.path.join(BOT_DIR, f"decoded_image_{bank_account_id}.png")
-        with open(img_path, "wb") as f:
-            f.write(img_bytes)
-        import cv2
-        import numpy as np
-
-        img = cv2.imread(img_path)
-
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # 🔥 Strong contrast boost
-        gray = cv2.convertScaleAbs(gray, alpha=3, beta=0)
-
-        # Blur to smooth background pattern
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        # Adaptive threshold (key fix for patterned background)
-        thresh = cv2.adaptiveThreshold(
-            blur,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            11,
-            2
-        )
-
-        # Remove small noise
-        kernel = np.ones((2,2), np.uint8)
-        clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-
-        # Resize (VERY important)
-        clean = cv2.resize(clean, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-
-        cv2.imwrite(img_path, clean)
-        await send_status('running', 'Extracting captcha text')
-        result = OCR_MODEL.readtext(img_path)
-        text = ''.join([detection[1] for detection in result])
-        cleaned_text = text.replace(" ", "")
-
-        if len(cleaned_text) < 6:
-            cleaned_text = cleaned_text + "f" * (6 - len(cleaned_text))
-
-        # Fill captcha and submit
-        try:
-            captcha_input = page.get_by_role("textbox", name="Type the text shown above")
-            await captcha_input.clear()
-            await captcha_input.fill(cleaned_text.upper())
-            await send_status('running', 'Filling captcha')
-            await asyncio.sleep(4)
-
-            await page.locator('#btn_loginConfirm').click()
-            logger.info('Login button clicked')
-            await send_status('running', 'Clicking login button')
-        except Exception as e:
-            logger.warning(f'Error submitting form: {str(e)}')
-            await asyncio.sleep(1)
-            continue
-
-        # Wait for navigation
-        try:
-            await send_status('running', 'Waiting for login to complete')
-            await page.wait_for_load_state('networkidle', timeout=20000)
-        except Exception as e:
-            logger.warning(f"Timeout waiting for page load: {str(e)}")
-
-        await asyncio.sleep(1)
-
-        # Check for captcha error
-        has_error = await page.locator("#errMsg").is_visible(timeout=1000)
-        if has_error:
-            await page.get_by_role("button", name="Close").click()
-            logger.warning(f'Error message found on attempt {captcha_attempt}')
-            await send_status('running', f'Error message found, retrying ({captcha_attempt}/{max_captcha_retries})')
-            continue
-
-
-        # Check if login was successful
-        login_button = page.get_by_role("button", name="UserId Login")
-
-        try:
-            # wait a bit to see if login button disappears
-            await login_button.wait_for(state="hidden", timeout=3000)
-            
-            logger.info('Login successful - login button disappeared')
-            login_successful = True
-            break
-
-        except:
-            logger.info('Login failed - still on login page')
-            login_successful = False
-
-    return login_successful
+        logger.error(f"Error downloading statement: {e}", exc_info=True)
+        await send_status('error', f'Statement error: {e}')
+        raise
 
 
 async def attempt_relogin(page, bank_account, send_status, bank_account_id: int, netbanking_url: str) -> bool:
-    """
-    Attempt to re-login after logout detection.
-    Max 5 attempts with 3 second delay between each.
-    Returns True if successful, False if all attempts fail.
-    """
     for attempt in range(1, MAX_RELOGIN_ATTEMPTS + 1):
-        await send_status('running', f'Re-login attempt {attempt}/{MAX_RELOGIN_ATTEMPTS}...')
-        logger.info(f"Re-login attempt {attempt}/{MAX_RELOGIN_ATTEMPTS} for bank account {bank_account_id}")
+        await send_status('running', f'Re-login attempt {attempt}/{MAX_RELOGIN_ATTEMPTS}')
+        logger.info(f"Re-login attempt {attempt}/{MAX_RELOGIN_ATTEMPTS} for account {bank_account_id}")
 
         await asyncio.sleep(RELOGIN_DELAY_SECONDS)
-
-        # Check stop flag
         await check_stop_and_raise(bank_account_id, send_status)
 
-        # Navigate to login page fresh
         try:
-            await page.goto(netbanking_url, wait_until='networkidle', timeout=60000)
-            logger.info('Login page loaded for re-login')
-            await send_status('running', 'Login page loaded')
+            await page.goto(netbanking_url, wait_until='domcontentloaded', timeout=60000)
         except Exception as e:
-            logger.warning(f'Navigation error during re-login: {e}')
+            logger.warning(f"Navigation error during re-login: {e}")
             try:
                 await page.goto(netbanking_url, wait_until='domcontentloaded', timeout=60000)
                 await asyncio.sleep(3)
             except Exception:
                 continue
 
-        # Attempt login
         if await perform_login(page, bank_account, send_status, bank_account_id):
-            await send_status('running', 'Re-login successful! Restarting monitoring...')
-            logger.info(f"Re-login successful for bank account {bank_account_id}")
+            await send_status('running', 'Re-login successful')
+            logger.info(f"Re-login successful for account {bank_account_id}")
             return True
 
-        logger.warning(f"Re-login attempt {attempt} failed for bank account {bank_account_id}")
+        logger.warning(f"Re-login attempt {attempt} failed for account {bank_account_id}")
 
-    await send_status('error', f'Re-login failed after {MAX_RELOGIN_ATTEMPTS} attempts. Stopping bot.')
-    logger.error(f"Re-login failed after {MAX_RELOGIN_ATTEMPTS} attempts for bank account {bank_account_id}")
+    await send_status('error', f'Re-login failed after {MAX_RELOGIN_ATTEMPTS} attempts')
+    logger.error(f"All re-login attempts failed for account {bank_account_id}")
     return False
 
 
 async def run_bot_for_account(bank_account_id: int):
     """
-    Run bot for a specific bank account with persistent browser session.
+    Run bot for a specific bank account:
     - Login once
-    - Loop: download statement -> process -> wait
-    - Only logout and close browser when stopped
+    - Loop: navigate from Accounts menu -> download statement -> verify -> wait BOT_INTERVAL seconds
+    - On stop: logout gracefully then close browser
     """
     browser = None
     page = None
 
     try:
-        # Get bank account details
         bank_account = await sync_to_async(BankAccount.objects.get)(id=bank_account_id)
         merchant_id = bank_account.merchant_id
 
-        # Shadow global send_status to include merchant_id and bank_account_id
         _send_status = send_status_to_websocket
         async def send_status(status, message=""):
             await _send_status(status, message, merchant_id, bank_account_id)
 
-        await send_status('running', "Starting bot for bank account")
-        logger.info(f"Starting bot for bank account: {bank_account.nickname} (ID: {bank_account_id})")
+        await send_status('running', 'Starting bot')
+        logger.info(f"Starting bot for {bank_account.nickname} (ID: {bank_account_id})")
 
-        # Check stop flag before starting
         await check_stop_and_raise(bank_account_id, send_status)
 
         async with async_playwright() as p:
@@ -777,333 +649,168 @@ async def run_bot_for_account(bank_account_id: int):
                 headless=True,
                 args=[
                     "--no-sandbox",
-                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-software-rasterizer",
-                    "--disable-accelerated-2d-canvas",
-                    "--disable-webgl",
-                    "--disable-webgl2",
-                    "--disable-features=VizDisplayCompositor",
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-zygote",
                     "--window-size=1500,800",
-                    "--disable-features=DownloadBubble,DownloadBubbleV2"
+                    "--disable-features=DownloadBubble,DownloadBubbleV2",
                 ]
             )
 
             try:
-                # Create a new context with realistic settings
                 context = await browser.new_context(
-                    viewport={"width": 1500, "height": 800},
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    locale="en-US",
+                    timezone_id="Asia/Kolkata",
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                     ignore_https_errors=True,
                     accept_downloads=True,
                 )
-
                 page = await context.new_page()
 
-                # Hide automation indicators
-                await page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => false
-                    });
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
-                    });
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en']
-                    });
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({ state: Notification.permission }) :
-                            originalQuery(parameters)
-                    );
-                """)
+                # await page.add_init_script("""
+                #     Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                #     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                #     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                #     const originalQuery = window.navigator.permissions.query;
+                #     window.navigator.permissions.query = (parameters) => (
+                #         parameters.name === 'notifications' ?
+                #             Promise.resolve({ state: Notification.permission }) :
+                #             originalQuery(parameters)
+                #     );
+                # """)
 
-                # ============ LOGIN PHASE (runs once) ============
+                # ── LOGIN ──────────────────────────────────────────────────
                 netbanking_url = bank_account.netbanking_url
                 await send_status('running', 'Navigating to login page')
 
                 try:
-                    await page.goto(netbanking_url, wait_until='networkidle', timeout=60000)
-                    logger.info('Page loaded successfully')
-                    await send_status('running', 'Page loaded successfully')
+                    page.on("console", lambda msg: print("CONSOLE:", msg.type, msg.text))
+                    page.on("pageerror", lambda e: print("PAGE ERROR:", e))
+                    page.on("requestfailed", lambda req: print("REQUEST FAILED:", req.url))
+                    await page.goto(netbanking_url, wait_until="networkidle")
+                    await asyncio.sleep(3)
+                    logger.info("Login page loaded")
                 except Exception as e:
-                    logger.warning(f'Navigation error: {e}')
+                    logger.warning(f"Navigation error: {e}")
                     await page.goto(netbanking_url, wait_until='domcontentloaded', timeout=60000)
                     await asyncio.sleep(3)
 
-                # Check stop flag after navigation
                 await check_stop_and_raise(bank_account_id, send_status)
 
-                # Perform login using the reusable function
-                login_successful = await perform_login(page, bank_account, send_status, bank_account_id)
-
-                if not login_successful:
-                    logger.error('Login failed after maximum captcha attempts')
+                if not await perform_login(page, bank_account, send_status, bank_account_id):
                     await send_status('error', 'Login failed after maximum captcha attempts')
-                    await page.screenshot(path=os.path.join(BOT_DIR, f'login_failed_{bank_account_id}.png'))
-                    raise Exception('Login failed after maximum captcha attempts')
+                    raise Exception("Login failed after maximum captcha attempts")
 
-                await send_status('running', 'Login successful! Starting continuous monitoring...')
-                logger.info(f'Login successful for bank account {bank_account_id}. Starting continuous monitoring...')
+                await send_status('running', 'Login successful — starting monitoring')
+                logger.info(f"Login successful for account {bank_account_id}")
 
-                # ============ MAIN LOOP (runs until stopped) ============
+                # ── MAIN LOOP ──────────────────────────────────────────────
                 iteration = 0
                 while True:
                     iteration += 1
-                    logger.info(f"=== Iteration {iteration} for bank account {bank_account_id} ===")
-                    await send_status('running', f'Iteration {iteration}: Checking status...')
+                    logger.info(f"=== Iteration {iteration} — account {bank_account_id} ===")
+                    await send_status('running', f'Iteration {iteration}: starting')
 
-                    # Check stop flag at start of each iteration
                     await check_stop_and_raise(bank_account_id, send_status)
 
-                    # Check for logout condition BEFORE processing
                     if await check_logged_out(page):
-                        logger.warning(f"Logout detected for bank account {bank_account_id}")
-                        await send_status('running', 'Session logged out detected. Attempting re-login...')
-
+                        logger.warning(f"Session expired for account {bank_account_id}")
+                        await send_status('running', 'Session expired — attempting re-login')
                         if not await attempt_relogin(page, bank_account, send_status, bank_account_id, netbanking_url):
                             raise Exception("Re-login failed after maximum attempts")
-
-                        # Reset iteration count after successful relogin (fresh start)
                         iteration = 0
-                        logger.info(f"Re-login successful for bank account {bank_account_id}. Restarting monitoring fresh.")
                         continue
 
-                    await send_status('running', f'Iteration {iteration}: Downloading statement...')
-
                     try:
-                        # Download and process statement
                         result = await download_statement(page, bank_account_id, send_status)
-                        logger.info(f"Iteration {iteration} statement download completed: {result}")
+                        logger.info(f"Iteration {iteration} download result: {result}")
 
-                        # Verify transactions after each download
                         await check_stop_and_raise(bank_account_id, send_status)
+
                         verify_result = await verify_transactions(send_status)
-                        logger.info(f"Iteration {iteration} verification completed: {verify_result}")
+                        logger.info(f"Iteration {iteration} verification result: {verify_result}")
+
                     except BotStoppedException:
                         raise
                     except Exception as e:
-                        logger.error(f"Error in iteration {iteration}: {str(e)}")
-                        await send_status('error', f'Iteration {iteration} error: {str(e)}')
-                        
-                        # Check if this error is due to logout
-                        if await check_logged_out(page):
-                            logger.warning(f"Error appears to be due to logout for bank account {bank_account_id}")
-                            await send_status('running', 'Error due to session logout. Attempting re-login...')
+                        logger.error(f"Iteration {iteration} error: {e}", exc_info=True)
+                        await send_status('error', f'Iteration {iteration} error: {e}')
 
+                        if await check_logged_out(page):
+                            await send_status('running', 'Session expired — attempting re-login')
                             if not await attempt_relogin(page, bank_account, send_status, bank_account_id, netbanking_url):
                                 raise Exception("Re-login failed after maximum attempts")
-
-                            # Reset iteration count after successful relogin (fresh start)
                             iteration = 0
-                            logger.info(f"Re-login successful for bank account {bank_account_id}. Restarting monitoring fresh.")
                             continue
-                        # Continue to next iteration even on other errors
 
-                    # Check stop flag before waiting
                     await check_stop_and_raise(bank_account_id, send_status)
 
-                    # Wait for interval, checking stop flag every 2 seconds
-                    await send_status('running', f'Waiting {BOT_INTERVAL}s before next iteration...')
-                    logger.info(f"Waiting {BOT_INTERVAL} seconds before next iteration...")
-
+                    # Wait BOT_INTERVAL seconds, checking stop flag every 2 seconds
+                    await send_status('running', f'Waiting {BOT_INTERVAL}s before next iteration')
+                    logger.info(f"Waiting {BOT_INTERVAL} seconds")
                     wait_elapsed = 0
                     while wait_elapsed < BOT_INTERVAL:
                         await asyncio.sleep(2)
                         wait_elapsed += 2
-
-                        # Check stop flag during wait
                         if check_stop_flag(bank_account_id):
-                            logger.info(f"Stop flag detected during wait for account {bank_account_id}")
                             await send_status('stopped', 'Bot stopped by user request')
                             raise BotStoppedException(f"Bot stopped during wait for account {bank_account_id}")
 
             except BotStoppedException:
-                logger.info(f"Bot stopped by user for bank account {bank_account_id}")
-                # Try to logout gracefully
-                try:
-                    await send_status('running', 'Logging out...')
-                    logout_button = page.locator("xpath=//a[contains(., 'Logout')]")
-                    await logout_button.click(timeout=5000)
-                    logger.info('Logout button clicked')
-                    await asyncio.sleep(2)
-                except Exception as logout_err:
-                    logger.warning(f"Could not logout gracefully: {logout_err}")
-
+                logger.info(f"Bot stopped for account {bank_account_id} — logging out")
+                await send_status('running', 'Logging out...')
+                if page:
+                    try:
+                        await page.get_by_role("button", name="Logout").click(timeout=5000)
+                        await page.locator("oe-i18n-msg[msgid='m_confirmLogout']").wait_for(state="visible", timeout=5000)
+                        await page.get_by_role("button", name="Yes").click(timeout=5000)
+                        logger.info("Logged out successfully")
+                        await asyncio.sleep(2)
+                    except Exception as e:
+                        logger.warning(f"Could not logout gracefully: {e}")
                 await send_status('stopped', 'Bot stopped successfully')
                 raise
 
             except Exception as e:
-                logger.error(f"Bot execution failed for bank account {bank_account_id}: {str(e)}", exc_info=True)
-                await send_status('error', f'Bot failed: {str(e)}')
+                logger.error(f"Bot execution failed for account {bank_account_id}: {e}", exc_info=True)
+                await send_status('error', f'Bot failed: {e}')
                 raise
 
             finally:
-                # Close browser
                 if browser:
                     try:
                         await browser.close()
-                        logger.info('Browser closed')
+                        logger.info("Browser closed")
                     except Exception as e:
-                        logger.warning(f"Error closing browser: {str(e)}")
+                        logger.warning(f"Error closing browser: {e}")
 
     except BotStoppedException:
         raise
     except Exception as e:
-        logger.error(f"Failed to run bot for bank account {bank_account_id}: {str(e)}", exc_info=True)
+        logger.error(f"Failed to run bot for account {bank_account_id}: {e}", exc_info=True)
         raise
 
 
 async def main():
-    """
-    Main function that runs bot for all enabled bank accounts.
-    """
     try:
-        # Get all enabled bank accounts
         enabled_accounts = await sync_to_async(list)(
             BankAccount.objects.filter(is_enabled=True, deleted_at=None).values_list('id', flat=True)
         )
-
         if not enabled_accounts:
-            logger.info("No enabled bank accounts found. Bot will not run.")
+            logger.info("No enabled bank accounts found")
             return
 
-        logger.info(f"Found {len(enabled_accounts)} enabled bank account(s). Starting bot execution...")
-
-        # Run bot for each enabled bank account
+        logger.info(f"Found {len(enabled_accounts)} enabled bank account(s)")
         for bank_account_id in enabled_accounts:
             try:
                 await run_bot_for_account(bank_account_id)
-                logger.info(f"Successfully completed bot execution for bank account {bank_account_id}")
             except Exception as e:
-                logger.error(f"Failed to run bot for bank account {bank_account_id}: {str(e)}", exc_info=True)
-                continue
+                logger.error(f"Failed for account {bank_account_id}: {e}", exc_info=True)
 
-        logger.info("Bot execution completed for all enabled bank accounts")
+        logger.info("Bot execution completed for all enabled accounts")
+
     except Exception as e:
-        logger.error(f"Failed to get enabled bank accounts: {str(e)}", exc_info=True)
+        logger.error(f"Failed to get enabled bank accounts: {e}", exc_info=True)
         raise
 
 
 def run_async(func, *args, **kwargs):
     return asyncio.run(func(*args, **kwargs))
-
-
-def run_bot():
-    try:
-        print("Running bot...")
-        run_async(main)
-        print("Verifying transactions...")
-        logger.info("Starting transaction verification...")
-        assigned_payins = Payin.objects.filter(status='assigned')
-        logger.info(f"Found {assigned_payins.count()} assigned payins to verify")
-
-        verified_count = 0
-        duplicate_count = 0
-        dropped_count = 0
-        not_found_count = 0
-        error_count = 0
-        for payin in assigned_payins:
-            merchant_id = payin.merchant_id
-            _send_status = send_status_to_websocket
-            def send_status(status, message=""):
-                asyncio.run(_send_status(status, message, merchant_id))
-            send_status('running', 'verifying transactions')
-            try:
-                with transaction.atomic():
-                    payin = Payin.objects.select_for_update().get(id=payin.id)
-
-                    if not payin.user_submitted_utr or payin.user_submitted_utr == '-':
-                        logger.debug(f"Payin {payin.id}: No UTR submitted, skipping")
-                        not_found_count += 1
-                        continue
-
-                    transaction_obj = ExtractedTransactions.objects.filter(
-                        utr=payin.user_submitted_utr,
-                        merchant_id=payin.merchant_id
-                    ).first()
-
-                    if not transaction_obj:
-                        logger.debug(f"Payin {payin.id}: No matching transaction found for UTR {payin.user_submitted_utr}")
-                        not_found_count += 1
-                        continue
-
-                    logger.debug(f"Payin {payin.id}: Found transaction {transaction_obj.id} with UTR {transaction_obj.utr}")
-
-                    if transaction_obj.is_used:
-                        logger.warning(
-                            f"Payin {payin.id}: Transaction {transaction_obj.id} (UTR: {transaction_obj.utr}) "
-                            f"is already used. Marking payin as duplicate."
-                        )
-                        payin.status = 'duplicate'
-                        if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                            payin.duration = timezone.now() - payin.assigned_at
-                        payin.save(update_fields=['status', 'duration'])
-                        duplicate_count += 1
-
-                    elif transaction_obj.amount != int(float(payin.pay_amount or 0)):
-                        logger.warning(
-                            f"Payin {payin.id}: Amount mismatch. "
-                            f"Payin amount: {payin.pay_amount}, Transaction amount: {transaction_obj.amount}. "
-                            f"Marking payin as dispute."
-                        )
-                        payin.status = 'dropped'
-                        if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                            payin.duration = timezone.now() - payin.assigned_at
-                        payin.save(update_fields=['status', 'duration'])
-                        dropped_count += 1
-
-                    else:
-                        logger.info(
-                            f"Payin {payin.id}: Transaction {transaction_obj.id} is valid. "
-                            f"Amount: {transaction_obj.amount}, UTR: {transaction_obj.utr}"
-                        )
-
-                        transaction_obj.is_used = True
-                        transaction_obj.save(update_fields=['is_used'])
-
-                        payin.status = 'success'
-                        payin.confirmed_amount = payin.pay_amount
-                        payin.utr = transaction_obj.utr
-
-                        if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                            payin.duration = timezone.now() - payin.assigned_at
-
-                        payin.save(update_fields=['status', 'confirmed_amount', 'duration', 'utr'])
-                        verified_count += 1
-
-            except Payin.DoesNotExist:
-                logger.warning(f"Payin {payin.id} no longer exists, skipping")
-                error_count += 1
-                continue
-            except Exception as e:
-                logger.error(f"Error verifying payin {payin.id}: {str(e)}", exc_info=True)
-                error_count += 1
-                continue
-
-        logger.info(
-            f"Transaction verification completed - "
-            f"Verified: {verified_count}, "
-            f"Duplicates: {duplicate_count}, "
-            f"Dropped: {dropped_count}, "
-            f"Not found: {not_found_count}, "
-            f"Errors: {error_count}"
-        )
-        send_status('running', 'transaction verification completed')
-
-        return {
-            "verified": verified_count,
-            "duplicates": duplicate_count,
-            "disputes": dropped_count,
-            "not_found": not_found_count,
-            "errors": error_count,
-            "total": assigned_payins.count()
-        }
-    except Exception as e:
-        logger.error(f"Bot task failed: {str(e)}", exc_info=True)
-        raise

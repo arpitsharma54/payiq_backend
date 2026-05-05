@@ -1,20 +1,23 @@
+# syntax=docker/dockerfile:1
 # Dockerfile for Celery Worker (with OCR, Playwright, Pandas)
-FROM python:3.12-slim as base
+FROM mcr.microsoft.com/playwright/python:v1.45.0 AS base
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Set work directory
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # PostgreSQL client
+# Install system dependencies — cached by BuildKit across rebuilds
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
-    # For Playwright
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -30,43 +33,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
-    # For EasyOCR
     libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
-    # Build essentials
     gcc \
     g++ \
-    && rm -rf /var/lib/apt/lists/*
+    locales \
+    && locale-gen en_US.UTF-8
 
-# Copy requirements and install Python dependencies
+# Install Python packages — pip download cache persists across rebuilds
 COPY requirements-base.txt requirements-celery.txt ./
-RUN pip install --no-cache-dir -r requirements-celery.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-celery.txt
 
-# Production stage
-FROM base as production
+# Bake Playwright Chromium into the image so there is nothing to download at runtime
+RUN --mount=type=cache,target=/root/.cache/pip \
+    playwright install chromium --with-deps
 
-# Copy application code
+# Pre-download EasyOCR English models into the image
+RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
+
+# Production stage — only re-runs from here on code changes
+FROM base AS production
+
 COPY . .
 
-# Create logs directory
 RUN mkdir -p /app/logs
 
-# Create non-root user for security
 RUN addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 --gid 1001 appuser && \
     chown -R appuser:appgroup /app
 
-# Make entrypoint executable
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod 755 /docker-entrypoint.sh
 
-# USER appuser
-
-# Set entrypoint
 ENTRYPOINT ["/docker-entrypoint.sh"]
-
-# Default command
 CMD ["celery-worker"]
