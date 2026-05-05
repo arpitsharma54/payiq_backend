@@ -1,7 +1,3 @@
-upstream django {
-    server web:8000;
-}
-
 # WebSocket connection upgrade mapping
 map $http_upgrade $connection_upgrade {
     default upgrade;
@@ -36,6 +32,10 @@ server {
     listen 443 ssl;
     http2 on;
     server_name ${DOMAIN};
+
+    # Docker's internal DNS — resolves service names at request time, not startup
+    resolver 127.0.0.11 valid=10s;
+    set $backend http://web:8001;
 
     # SSL certificates (managed by certbot)
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
@@ -75,7 +75,7 @@ server {
 
     # WebSocket connections
     location /ws/ {
-        proxy_pass http://django;
+        proxy_pass $backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -89,7 +89,7 @@ server {
 
     # Proxy all other requests to Django
     location / {
-        proxy_pass http://django;
+        proxy_pass $backend;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
