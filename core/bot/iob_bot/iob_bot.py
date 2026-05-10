@@ -297,8 +297,8 @@ async def verify_transactions(send_status) -> dict:
                         if transaction_obj.is_used:
                             logger.warning(f"Payin {payin.id}: UTR {transaction_obj.utr} already used — marking duplicate")
                             payin.status = 'duplicate'
-                            if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                                payin.duration = timezone.now() - payin.assigned_at
+                            if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                                payin.duration = timezone.now() - payin.utr_submitted_at
                             payin.save(update_fields=['status', 'duration'])
                             duplicate_count += 1
 
@@ -309,21 +309,22 @@ async def verify_transactions(send_status) -> dict:
                             )
                             payin.status = 'dropped'
                             payin.amount = transaction_obj.amount
-                            if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                                payin.duration = timezone.now() - payin.assigned_at
+                            if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                                payin.duration = timezone.now() - payin.utr_submitted_at
                             payin.save(update_fields=['status', 'duration', 'amount'])
                             dropped_count += 1
 
                         else:
                             logger.info(f"Payin {payin.id}: Verified — amount={transaction_obj.amount}, UTR={transaction_obj.utr}")
                             transaction_obj.is_used = True
-                            transaction_obj.save(update_fields=['is_used'])
+                            transaction_obj.used_at = timezone.now()
+                            transaction_obj.save(update_fields=['is_used', 'used_at'])
 
                             payin.status = 'success'
                             payin.confirmed_amount = payin.pay_amount
                             payin.utr = transaction_obj.utr
-                            if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                                payin.duration = timezone.now() - payin.assigned_at
+                            if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                                payin.duration = timezone.now() - payin.utr_submitted_at
                             payin.save(update_fields=['status', 'confirmed_amount', 'duration', 'utr'])
                             verified_count += 1
 

@@ -705,7 +705,8 @@ class PayinPublicSessionView(APIView):
         # Update UTR if provided
         if utr:
             payin.user_submitted_utr = utr
-            payin.save(update_fields=['user_submitted_utr'])
+            payin.utr_submitted_at = timezone.now()
+            payin.save(update_fields=['user_submitted_utr', 'utr_submitted_at'])
 
         # Handle screenshot upload if provided
         # Note: You may want to save the screenshot file to a storage service

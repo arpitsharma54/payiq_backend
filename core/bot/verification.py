@@ -109,9 +109,9 @@ def verify_transactions_sync(bank_account_id: int = None) -> dict:
                         f"is already used. Marking payin as duplicate."
                     )
                     payin.status = 'duplicate'
-                    # Calculate duration if assigned_at exists
-                    if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                        payin.duration = timezone.now() - payin.assigned_at
+                    # Calculate duration if utr_submitted_at exists
+                    if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                        payin.duration = timezone.now() - payin.utr_submitted_at
                         logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
                     payin.save(update_fields=['status', 'duration'])
                     duplicate_count += 1
@@ -125,9 +125,9 @@ def verify_transactions_sync(bank_account_id: int = None) -> dict:
                     )
                     payin.status = 'dropped'
                     payin.confirmed_amount = transaction_obj.amount
-                    # Calculate duration if assigned_at exists
-                    if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                        payin.duration = timezone.now() - payin.assigned_at
+                    # Calculate duration if utr_submitted_at exists
+                    if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                        payin.duration = timezone.now() - payin.utr_submitted_at
                         logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
                     payin.save(update_fields=['status', 'duration', 'confirmed_amount'])
                     dropped_count += 1
@@ -141,16 +141,17 @@ def verify_transactions_sync(bank_account_id: int = None) -> dict:
 
                     # Mark transaction as used
                     transaction_obj.is_used = True
-                    transaction_obj.save(update_fields=['is_used'])
+                    transaction_obj.used_at = timezone.now()
+                    transaction_obj.save(update_fields=['is_used', 'used_at'])
 
                     # Update payin status
                     payin.status = 'success'
                     payin.confirmed_amount = payin.pay_amount
                     payin.utr = transaction_obj.utr
 
-                    # Calculate duration if assigned_at exists
-                    if hasattr(payin, 'assigned_at') and payin.assigned_at:
-                        payin.duration = timezone.now() - payin.assigned_at
+                    # Calculate duration if utr_submitted_at exists
+                    if hasattr(payin, 'utr_submitted_at') and payin.utr_submitted_at:
+                        payin.duration = timezone.now() - payin.utr_submitted_at
                         logger.debug(f"Payin {payin.id}: Duration calculated: {payin.duration}")
 
                     payin.save(update_fields=['status', 'confirmed_amount', 'duration', 'utr'])

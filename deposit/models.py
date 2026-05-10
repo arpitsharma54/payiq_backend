@@ -99,6 +99,11 @@ class Payin(SoftDeleteModel):
         null=True,
         help_text="UTR submitted by the user"
     )
+    utr_submitted_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Time when the UTR was submitted by the user"
+    )
     
     # Status and timing
     status = models.CharField(
@@ -153,9 +158,9 @@ class Payin(SoftDeleteModel):
         return "-"
     
     def calculate_duration(self):
-        """Calculate duration from created_at to updated_at if status is success"""
-        if self.status == 'success' and self.created_at and self.updated_at:
-            self.duration = self.updated_at - self.created_at
+        """Calculate duration from utr_submitted_at to updated_at if status is success"""
+        if self.status == 'success' and not self.duration and self.utr_submitted_at and self.updated_at:
+            self.duration = self.updated_at - self.utr_submitted_at
             self.save(update_fields=['duration'])
     
     def update_bank_account_balance(self):
@@ -228,6 +233,11 @@ class Payin(SoftDeleteModel):
             except Payin.DoesNotExist:
                 pass
         
+        # Ensure updated_at is always updated when using update_fields
+        if update_fields is not None and 'updated_at' not in update_fields:
+            update_fields = list(update_fields) + ['updated_at']
+            kwargs['update_fields'] = update_fields
+            
         # Save the instance
         super().save(*args, **kwargs)
         
