@@ -15,6 +15,8 @@ class PayinAdmin(admin.ModelAdmin):
         'bank',
         'status',
         'utr',
+        'duration',
+        'utr_submitted_at',
         'created_at',
         'updated_at',
     ]
@@ -52,7 +54,7 @@ class PayinAdmin(admin.ModelAdmin):
             'fields': ('utr', 'user_submitted_utr')
         }),
         ('Timing', {
-            'fields': ('duration', 'created_at', 'updated_at')
+            'fields': ('duration', 'utr_submitted_at','created_at', 'updated_at')
         }),
         ('Additional', {
             'fields': ('notes',)

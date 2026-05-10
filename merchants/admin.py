@@ -109,11 +109,12 @@ class ExtractedTransactionsAdmin(admin.ModelAdmin):
         'amount',
         'utr',
         'is_used',
+        'used_at',
         'created_at',
     ]
     list_filter = ['is_used', 'bank_account', 'created_at']
     search_fields = ['utr', 'bank_account__nickname', 'bank_account__account_number']
-    readonly_fields = ['created_at']
+    readonly_fields = ['created_at', 'used_at']
     fieldsets = (
         ('Transaction Details', {
             'fields': ('bank_account', 'amount', 'utr', 'is_used')
