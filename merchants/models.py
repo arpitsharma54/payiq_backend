@@ -292,6 +292,7 @@ class ExtractedTransactions(SoftDeleteModel):
     utr = models.CharField(max_length=255, help_text="UTR of the transaction", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation time")
     is_used = models.BooleanField(default=False, help_text="Whether the transaction has been used", db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True, help_text="Time when the transaction was used")
 
     class Meta:
         db_table = 'extracted_transactions'
