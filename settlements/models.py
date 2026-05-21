@@ -222,11 +222,11 @@ class Settlement(SoftDeleteModel):
 
     def save(self, *args, **kwargs):
         """Override save to snapshot account details"""
-        # If settlement_account is provided and bank details are not set, copy them
-        if self.settlement_account and not self.bank_account_number:
-            if self.settlement_account.instrument_type == 'bank':
-                self.bank_account_holder_name = self.settlement_account.account_holder_name
-                self.bank_account_number = self.settlement_account.account_number
-                self.bank_ifsc_code = self.settlement_account.ifsc_code
+        # If to_settlement_account is provided and bank details are not set, copy them
+        if self.to_settlement_account and not self.bank_account_number:
+            if self.to_settlement_account.instrument_type == 'bank':
+                self.bank_account_holder_name = self.to_settlement_account.account_holder_name
+                self.bank_account_number = self.to_settlement_account.account_number
+                self.bank_ifsc_code = self.to_settlement_account.ifsc_code
                 self.method = 'bank'
         super().save(*args, **kwargs)

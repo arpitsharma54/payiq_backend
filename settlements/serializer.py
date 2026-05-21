@@ -91,6 +91,21 @@ class SettlementSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
+    settlement_account_holder_name = serializers.CharField(
+        source='settlement_account.account_holder_name',
+        read_only=True,
+        allow_null=True
+    )
+    settlement_account_number = serializers.CharField(
+        source='settlement_account.account_number',
+        read_only=True,
+        allow_null=True
+    )
+    settlement_account_ifsc_code = serializers.CharField(
+        source='settlement_account.ifsc_code',
+        read_only=True,
+        allow_null=True
+    )
     to_settlement_account_nickname = serializers.CharField(
         source='to_settlement_account.nickname',
         read_only=True,
@@ -122,6 +137,9 @@ class SettlementSerializer(serializers.ModelSerializer):
             'merchant_code',
             'settlement_account',
             'settlement_account_nickname',
+            'settlement_account_holder_name',
+            'settlement_account_number',
+            'settlement_account_ifsc_code',
             'to_settlement_account',
             'to_settlement_account_nickname',
             'to_settlement_account_holder_name',
@@ -166,22 +184,22 @@ class SettlementCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Validate settlement data"""
-        settlement_account = attrs.get('settlement_account')
+        to_settlement_account = attrs.get('to_settlement_account')
 
-        # If settlement_account is provided, bank details will be auto-filled
-        # If not, validate that bank details are provided
-        if not settlement_account:
+        # If to_settlement_account is provided, bank details will be auto-filled from it
+        # If not, validate that bank details are manually provided
+        if not to_settlement_account:
             if not attrs.get('bank_account_holder_name'):
                 raise serializers.ValidationError({
-                    'bank_account_holder_name': 'Account holder name is required when no settlement account is selected.'
+                    'bank_account_holder_name': 'Account holder name is required when no destination account is selected.'
                 })
             if not attrs.get('bank_account_number'):
                 raise serializers.ValidationError({
-                    'bank_account_number': 'Account number is required when no settlement account is selected.'
+                    'bank_account_number': 'Account number is required when no destination account is selected.'
                 })
             if not attrs.get('bank_ifsc_code'):
                 raise serializers.ValidationError({
-                    'bank_ifsc_code': 'IFSC code is required when no settlement account is selected.'
+                    'bank_ifsc_code': 'IFSC code is required when no destination account is selected.'
                 })
 
         return attrs

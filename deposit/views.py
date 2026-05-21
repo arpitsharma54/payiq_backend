@@ -184,6 +184,12 @@ class PayinDetailView(APIView):
     def put(self, request, pk):
         """Full update of a payin"""
         payin = get_object_or_404(Payin, pk=pk)
+        
+        if payin.status == 'success' and request.data.get('status') and request.data.get('status') != 'success':
+            return Response({
+                'error': 'Cannot change status of a successful deposit'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = PayinUpdateSerializer(payin, data=request.data)
         serializer.is_valid(raise_exception=True)
         updated_payin = serializer.save()
@@ -194,6 +200,12 @@ class PayinDetailView(APIView):
     def patch(self, request, pk):
         """Partial update of a payin"""
         payin = get_object_or_404(Payin, pk=pk)
+        
+        if payin.status == 'success' and request.data.get('status') and request.data.get('status') != 'success':
+            return Response({
+                'error': 'Cannot change status of a successful deposit'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = PayinUpdateSerializer(payin, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_payin = serializer.save()
