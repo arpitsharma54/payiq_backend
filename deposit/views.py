@@ -829,23 +829,62 @@ class DashboardView(APIView):
 
         # Get query parameters
         merchant_codes = request.query_params.getlist('merchant_codes', [])
-        time_range = request.query_params.get('time_range', '7D')  # 12H, 7D, 15D
+        time_range = request.query_params.get('time_range', 'TODAY')  # TODAY, YESTERDAY, 7D, 30D, CUSTOM
+
+        # Calculate time range in IST (Asia/Kolkata)
+        now_local = timezone.localtime(timezone.now())
+        start_time = None
+        end_time = None
+
+        if time_range == 'TODAY':
+            start_time = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = now_local
+        elif time_range == 'YESTERDAY':
+            start_time = (now_local - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = (now_local - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif time_range == '7D':
+            start_time = (now_local - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = now_local
+        elif time_range == '30D':
+            start_time = (now_local - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = now_local
+        elif time_range == 'CUSTOM':
+            start_date_str = request.query_params.get('start_date')
+            end_date_str = request.query_params.get('end_date')
+            from datetime import datetime
+            if start_date_str:
+                try:
+                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                    start_dt = datetime.combine(start_date, datetime.min.time())
+                    start_time = timezone.make_aware(start_dt, timezone.get_current_timezone())
+                except ValueError:
+                    pass
+            if end_date_str:
+                try:
+                    end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                    end_dt = datetime.combine(end_date, datetime.max.time())
+                    end_time = timezone.make_aware(end_dt, timezone.get_current_timezone())
+                except ValueError:
+                    pass
+            
+            if not start_time:
+                start_time = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            if not end_time:
+                end_time = now_local
+        else:
+            # Fallback to TODAY
+            start_time = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = now_local
 
         # Filter by merchant codes if provided
         if merchant_codes:
             payins_queryset = payins_queryset.filter(merchant__code__in=merchant_codes)
 
-        # Calculate time range
-        now = timezone.now()
-        if time_range == '12H':
-            start_time = now - timedelta(hours=12)
-        elif time_range == '15D':
-            start_time = now - timedelta(days=15)
-        else:  # Default to 7D
-            start_time = now - timedelta(days=7)
-
         # Filter by time range
-        payins_queryset = payins_queryset.filter(created_at__gte=start_time)
+        if start_time:
+            payins_queryset = payins_queryset.filter(created_at__gte=start_time)
+        if end_time:
+            payins_queryset = payins_queryset.filter(created_at__lte=end_time)
 
         # Calculate metrics
         # Total deposits (success status)
@@ -893,20 +932,16 @@ class DashboardView(APIView):
         # Generate chart data based on time range
         chart_data = []
 
-        if time_range == '12H':
-            # For 12H, show hourly data for the last 12 hours (IST)
-            # Ensure current time is in IST (timezone.now() returns timezone-aware datetime)
-            current_time_ist = timezone.localtime(now)
-            # Round current time to nearest hour
-            current_time = current_time_ist.replace(minute=0, second=0, microsecond=0)
+        # Determine whether to show hourly or daily chart data
+        show_hourly = False
+        if start_time and end_time:
+            duration_hours = (end_time - start_time).total_seconds() / 3600
+            if duration_hours <= 36:
+                show_hourly = True
 
-            # Calculate start time (12 hours ago)
-            start_time = current_time - timedelta(hours=11)  # 11 hours back + current hour = 12 hours
-
-            # Get hourly deposits within the last 12 hours
-            hourly_deposits = success_payins.filter(
-                created_at__gte=start_time
-            ).annotate(
+        if show_hourly:
+            # Get hourly deposits
+            hourly_deposits = success_payins.annotate(
                 hour=TruncHour('created_at')
             ).values('hour').annotate(
                 amount=Sum('confirmed_amount'),
@@ -914,12 +949,9 @@ class DashboardView(APIView):
             ).order_by('hour')
 
             # Create a dictionary of actual data by hour
-            # Use a normalized hour string as key for matching
             data_by_hour = {}
             for item in hourly_deposits:
                 hour_dt = item['hour']
-                # TruncHour returns timezone-aware datetime in project timezone (IST)
-                # Convert to local time (IST) and then to naive for string comparison
                 if hasattr(hour_dt, 'tzinfo') and hour_dt.tzinfo is not None:
                     hour_dt = timezone.localtime(hour_dt)
                     hour_dt = hour_dt.replace(tzinfo=None)
@@ -927,26 +959,29 @@ class DashboardView(APIView):
                 # Use hour as key (YYYY-MM-DD HH:00:00 format)
                 hour_key = hour_dt.strftime('%Y-%m-%d %H:00:00')
                 data_by_hour[hour_key] = {
-                    'amount': float(item['amount']),
+                    'amount': float(item['amount']) if item['amount'] is not None else 0.0,
                     'count': item['count']
                 }
 
-            # Generate all hours in the last 12 hours (from 11 hours ago to current hour)
-            # current_time is already in IST and naive
-            for i in range(11, -1, -1):  # Go from 11 hours ago to current hour
-                hour_time = current_time - timedelta(hours=i)
-                hour_str = hour_time.strftime('%Y-%m-%d %H:00:00')
-                hour_display = hour_time.strftime('%Y-%m-%d %H:%M:%S')
+            # Generate all hours in the range
+            start_hour = start_time.replace(minute=0, second=0, microsecond=0)
+            end_hour = end_time.replace(minute=0, second=0, microsecond=0)
+            
+            start_hour_local = timezone.localtime(start_hour).replace(tzinfo=None)
+            end_hour_local = timezone.localtime(end_hour).replace(tzinfo=None)
+
+            current_hour = start_hour_local
+            while current_hour <= end_hour_local:
+                hour_str = current_hour.strftime('%Y-%m-%d %H:00:00')
+                hour_display = current_hour.strftime('%Y-%m-%d %H:%M:%S')
                 chart_data.append({
                     'date': hour_display,
                     'amount': data_by_hour.get(hour_str, {}).get('amount', 0.0),
                     'count': data_by_hour.get(hour_str, {}).get('count', 0)
                 })
+                current_hour += timedelta(hours=1)
         else:
-            # For 7D or 15D, show daily data
-            # Ensure we're working in IST
-            now_ist = timezone.localtime(now)
-
+            # Show daily data
             daily_deposits = success_payins.annotate(
                 date=TruncDate('created_at')
             ).values('date').annotate(
@@ -958,10 +993,7 @@ class DashboardView(APIView):
             data_by_date = {}
             for item in daily_deposits:
                 date_dt = item['date']
-                # TruncDate returns a date object, but we need to ensure it's in IST
-                # If it's a datetime, convert to IST first, then get date
                 if not isinstance(date_dt, date):
-                    # It's a datetime, convert to IST and extract date
                     if hasattr(date_dt, 'tzinfo') and date_dt.tzinfo is not None:
                         date_dt = timezone.localtime(date_dt)
                     date_dt = date_dt.date() if hasattr(date_dt, 'date') else date_dt
@@ -973,13 +1005,12 @@ class DashboardView(APIView):
                     'count': item['count']
                 }
 
-            # Generate all dates in the range (using IST)
-            days = 7 if time_range == '7D' else 15
-            start_date = (now_ist - timedelta(days=days-1)).date()
-            end_date = now_ist.date()
+            # Generate all dates in the range
+            start_date_local = timezone.localtime(start_time).date()
+            end_date_local = timezone.localtime(end_time).date()
 
-            current_date = start_date
-            while current_date <= end_date:
+            current_date = start_date_local
+            while current_date <= end_date_local:
                 date_str = current_date.strftime('%Y-%m-%d')
                 amount = data_by_date.get(date_str, {}).get('amount', 0.0)
                 count = data_by_date.get(date_str, {}).get('count', 0)

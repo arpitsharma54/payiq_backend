@@ -683,9 +683,9 @@ async def run_bot_for_account(bank_account_id: int):
                 await send_status('running', 'Navigating to login page')
 
                 try:
-                    page.on("console", lambda msg: print("CONSOLE:", msg.type, msg.text))
-                    page.on("pageerror", lambda e: print("PAGE ERROR:", e))
-                    page.on("requestfailed", lambda req: print("REQUEST FAILED:", req.url))
+                    # page.on("console", lambda msg: print("CONSOLE:", msg.type, msg.text))
+                    # page.on("pageerror", lambda e: print("PAGE ERROR:", e))
+                    # page.on("requestfailed", lambda req: print("REQUEST FAILED:", req.url))
                     await page.goto(netbanking_url, wait_until="networkidle")
                     await asyncio.sleep(3)
                     logger.info("Login page loaded")
