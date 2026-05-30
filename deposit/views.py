@@ -287,6 +287,10 @@ class PayinNotifyView(APIView):
     def post(self, request, pk):
         """Notify merchant by sending HTTP POST to their callback URL"""
         import requests as http_requests
+        import json
+        import logging
+        from django.utils import timezone
+        logger = logging.getLogger(__name__)
 
         payin = get_object_or_404(Payin, pk=pk)
 
@@ -309,12 +313,39 @@ class PayinNotifyView(APIView):
             'bank': payin.bank,
         }
 
+        call_start_time = timezone.now()
+        status_changed_at = payin.updated_at.isoformat() if hasattr(payin, 'updated_at') and payin.updated_at else 'Unknown'
+
         try:
+            logger.info(
+                f"--- MANUAL MERCHANT CALLBACK INITIATED ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Payin UUID: {payin.payin_uuid}\n"
+                f"Status Changed At: {status_changed_at}\n"
+                f"API Call Time: {call_start_time.isoformat()}\n"
+                f"URL: {payin.merchant.callback_url}\n"
+                f"Payload: {json.dumps(payload, indent=2)}\n"
+                f"-------------------------------------------"
+            )
+
             response = http_requests.post(
                 payin.merchant.callback_url,
                 json=payload,
                 timeout=30,
                 headers={'Content-Type': 'application/json'}
+            )
+
+            call_end_time = timezone.now()
+            duration = (call_end_time - call_start_time).total_seconds()
+
+            logger.info(
+                f"--- MANUAL MERCHANT CALLBACK RESPONSE ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Response Time: {call_end_time.isoformat()} (Duration: {duration:.3f}s)\n"
+                f"Status Code: {response.status_code}\n"
+                f"Response Headers: {dict(response.headers)}\n"
+                f"Response Body: {response.text}\n"
+                f"------------------------------------------"
             )
 
             serializer = PayinSerializer(payin)
@@ -325,11 +356,35 @@ class PayinNotifyView(APIView):
                 'status': payin.status,
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
-        except http_requests.exceptions.Timeout:
+        except http_requests.exceptions.Timeout as e:
+            call_end_time = timezone.now()
+            duration = (call_end_time - call_start_time).total_seconds()
+            logger.error(
+                f"--- MANUAL MERCHANT CALLBACK TIMEOUT ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Status Changed At: {status_changed_at}\n"
+                f"URL: {payin.merchant.callback_url}\n"
+                f"Payload: {json.dumps(payload)}\n"
+                f"Duration: {duration:.3f}s\n"
+                f"Error: {str(e)}\n"
+                f"----------------------------------------"
+            )
             return Response({
                 'error': 'Callback request timed out after 30 seconds'
             }, status=status.HTTP_504_GATEWAY_TIMEOUT)
         except http_requests.exceptions.RequestException as e:
+            call_end_time = timezone.now()
+            duration = (call_end_time - call_start_time).total_seconds()
+            logger.error(
+                f"--- MANUAL MERCHANT CALLBACK FAILED ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Status Changed At: {status_changed_at}\n"
+                f"URL: {payin.merchant.callback_url}\n"
+                f"Payload: {json.dumps(payload)}\n"
+                f"Duration: {duration:.3f}s\n"
+                f"Error: {str(e)}\n"
+                f"---------------------------------------"
+            )
             return Response({
                 'error': f'Failed to send notification: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -18,6 +18,9 @@ def send_merchant_callback(payin) -> bool:
     Returns:
         bool: True if callback was sent successfully, False otherwise
     """
+    import json
+    from django.utils import timezone
+
     # Check if merchant has callback URL configured
     if not payin.merchant or not payin.merchant.callback_url:
         logger.debug(f"Payin {payin.id}: Merchant has no callback URL configured")
@@ -36,10 +39,19 @@ def send_merchant_callback(payin) -> bool:
         'bank': payin.bank,
     }
     
+    call_start_time = timezone.now()
+    status_changed_at = payin.updated_at.isoformat() if hasattr(payin, 'updated_at') and payin.updated_at else 'Unknown'
+    
     try:
         logger.info(
-            f"Payin {payin.id}: Sending callback to merchant {payin.merchant.id} "
-            f"at {payin.merchant.callback_url} for status: {payin.status}"
+            f"--- MERCHANT CALLBACK INITIATED ---\n"
+            f"Payin ID: {payin.id}\n"
+            f"Payin UUID: {payin.payin_uuid}\n"
+            f"Status Changed At: {status_changed_at}\n"
+            f"API Call Time: {call_start_time.isoformat()}\n"
+            f"URL: {payin.merchant.callback_url}\n"
+            f"Payload: {json.dumps(payload, indent=2)}\n"
+            f"------------------------------------"
         )
         
         response = requests.post(
@@ -49,35 +61,73 @@ def send_merchant_callback(payin) -> bool:
             headers={'Content-Type': 'application/json'}
         )
         
+        call_end_time = timezone.now()
+        duration = (call_end_time - call_start_time).total_seconds()
+        
         # Check if response is successful (2xx status codes)
         if response.status_code >= 200 and response.status_code < 300:
             logger.info(
-                f"Payin {payin.id}: Callback sent successfully to merchant {payin.merchant.id}. "
-                f"Response status: {response.status_code}"
+                f"--- MERCHANT CALLBACK SUCCESS ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Response Time: {call_end_time.isoformat()} (Duration: {duration:.3f}s)\n"
+                f"Status Code: {response.status_code}\n"
+                f"Response Headers: {dict(response.headers)}\n"
+                f"Response Body: {response.text}\n"
+                f"----------------------------------"
             )
             return True
         else:
             logger.warning(
-                f"Payin {payin.id}: Callback sent but received non-2xx response "
-                f"({response.status_code}) from merchant {payin.merchant.id}"
+                f"--- MERCHANT CALLBACK NON-2XX RESPONSE ---\n"
+                f"Payin ID: {payin.id}\n"
+                f"Response Time: {call_end_time.isoformat()} (Duration: {duration:.3f}s)\n"
+                f"Status Code: {response.status_code}\n"
+                f"Response Headers: {dict(response.headers)}\n"
+                f"Response Body: {response.text}\n"
+                f"-------------------------------------------"
             )
             return False
             
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as e:
+        call_end_time = timezone.now()
+        duration = (call_end_time - call_start_time).total_seconds()
         logger.error(
-            f"Payin {payin.id}: Callback request timed out after 30 seconds "
-            f"for merchant {payin.merchant.id} at {payin.merchant.callback_url}"
+            f"--- MERCHANT CALLBACK TIMEOUT ---\n"
+            f"Payin ID: {payin.id}\n"
+            f"Status Changed At: {status_changed_at}\n"
+            f"URL: {payin.merchant.callback_url}\n"
+            f"Payload: {json.dumps(payload)}\n"
+            f"Duration: {duration:.3f}s\n"
+            f"Error: {str(e)}\n"
+            f"----------------------------------"
         )
         return False
     except requests.exceptions.RequestException as e:
+        call_end_time = timezone.now()
+        duration = (call_end_time - call_start_time).total_seconds()
         logger.error(
-            f"Payin {payin.id}: Failed to send callback to merchant {payin.merchant.id} "
-            f"at {payin.merchant.callback_url}: {str(e)}"
+            f"--- MERCHANT CALLBACK FAILED ---\n"
+            f"Payin ID: {payin.id}\n"
+            f"Status Changed At: {status_changed_at}\n"
+            f"URL: {payin.merchant.callback_url}\n"
+            f"Payload: {json.dumps(payload)}\n"
+            f"Duration: {duration:.3f}s\n"
+            f"Error: {str(e)}\n"
+            f"---------------------------------"
         )
         return False
     except Exception as e:
+        call_end_time = timezone.now()
+        duration = (call_end_time - call_start_time).total_seconds()
         logger.error(
-            f"Payin {payin.id}: Unexpected error sending callback to merchant {payin.merchant.id}: {str(e)}",
+            f"--- MERCHANT CALLBACK UNEXPECTED ERROR ---\n"
+            f"Payin ID: {payin.id}\n"
+            f"Status Changed At: {status_changed_at}\n"
+            f"URL: {payin.merchant.callback_url}\n"
+            f"Payload: {json.dumps(payload)}\n"
+            f"Duration: {duration:.3f}s\n"
+            f"Error: {str(e)}\n"
+            f"------------------------------------------",
             exc_info=True
         )
         return False
