@@ -557,7 +557,18 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
             logger.info("No transactions to display, skipping download")
             await send_status('running', 'No transactions found, proceeding to verification')
             return {"saved": 0, "skipped": 0, "errors": 0, "extracted": 0}
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(3000)
+        no_data = page.locator("iob-detailed-statement").get_by_text("No records found!")
 
+        if await no_data.is_visible():
+            logger.info("No transactions found")
+            return {
+                "saved": 0,
+                "skipped": 0,
+                "errors": 0,
+                "extracted": 0
+            }
         # Download CSV — intercept download before clicking
         await page.get_by_role("button", name="Download Button press enter").wait_for(state="visible")
         await page.get_by_role("button", name="Download Button press enter").click()
@@ -658,6 +669,7 @@ async def run_bot_for_account(bank_account_id: int):
 
             try:
                 context = await browser.new_context(
+                    permissions=["geolocation"],
                     locale="en-US",
                     timezone_id="Asia/Kolkata",
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
