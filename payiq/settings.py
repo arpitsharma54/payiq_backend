@@ -221,6 +221,8 @@ LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Kolkata'  # IST (Indian Standard Time)
 
+CELERY_TIMEZONE = TIME_ZONE
+
 USE_I18N = True
 
 USE_TZ = True

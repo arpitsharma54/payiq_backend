@@ -5,6 +5,7 @@ services:
     container_name: payiq_postgres
     restart: unless-stopped
     environment:
+      TZ: Asia/Kolkata
       POSTGRES_DB: ${POSTGRES_DB:-payiq_db}
       POSTGRES_USER: ${POSTGRES_USER:-payiq_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payiq_password}
@@ -47,6 +48,7 @@ services:
     restart: unless-stopped
     command: web
     environment:
+      - TZ=Asia/Kolkata
       - SECRET_KEY=${SECRET_KEY}
       - DEBUG=${DEBUG:-0}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
@@ -175,6 +177,7 @@ services:
     restart: unless-stopped
     command: celery-worker
     environment:
+      - TZ=Asia/Kolkata
       - SECRET_KEY=${SECRET_KEY}
       - DEBUG=${DEBUG:-0}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
