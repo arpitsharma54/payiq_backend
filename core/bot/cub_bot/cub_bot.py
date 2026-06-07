@@ -407,8 +407,9 @@ async def download_statement(login_page, bank_account_id: int, send_status) -> d
         await asyncio.sleep(2)
 
         # Set dates
-        yesterday_date = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
-        today_date = datetime.now().strftime("%d/%m/%Y")
+        local_now = timezone.localtime(timezone.now())
+        yesterday_date = (local_now - timedelta(days=1)).strftime("%d/%m/%Y")
+        today_date = local_now.strftime("%d/%m/%Y")
         from_date_locator = folder_frame_locator.get_by_role("textbox", name="Select From Date")
         await from_date_locator.wait_for()
         await from_date_locator.evaluate("""

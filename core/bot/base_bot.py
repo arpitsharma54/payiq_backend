@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from playwright.async_api import async_playwright
 from asgiref.sync import sync_to_async
 from channels.layers import get_channel_layer
+from django.utils import timezone
 
 from merchants.models import BankAccount, ExtractedTransactions
 
@@ -385,8 +386,7 @@ class BaseBankBot(ABC):
 
             # Download statement
             await self.send_status('running', 'Downloading statement...')
-            from datetime import datetime
-            today = datetime.now().strftime('%d/%m/%Y')
+            today = timezone.localtime(timezone.now()).strftime('%d/%m/%Y')
             csv_path = await self.download_statement(today, today)
 
             if not csv_path:

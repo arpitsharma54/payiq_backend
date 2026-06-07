@@ -531,8 +531,9 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
         logger.info("Custom range selected")
 
         # Set dates
-        today = datetime.now().strftime('%d/%m/%Y')
-        yesterday = (datetime.now() - timedelta(days=3)).strftime('%d/%m/%Y')
+        local_now = timezone.localtime(timezone.now())
+        today = local_now.strftime('%d/%m/%Y')
+        yesterday = (local_now - timedelta(days=3)).strftime('%d/%m/%Y')
 
         await page.get_by_label("From date").first.fill(yesterday)
         logger.info(f"From date: {yesterday}")
