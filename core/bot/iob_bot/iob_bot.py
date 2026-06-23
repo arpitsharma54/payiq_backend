@@ -75,6 +75,63 @@ async def save_screenshot(page, prefix="error"):
             filepath = os.path.join(screenshots_dir, filename)
             await page.screenshot(path=filepath, full_page=True)
             logger.info(f"Screenshot saved to {filepath}")
+
+            # Send to Telegram if configured
+            token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+            chat_id = getattr(settings, 'TELEGRAM_CHAT_ID', None)
+            if token and chat_id:
+                caption = f"🚨 IOB Bot Failure Alert\n\n📌 Event: {prefix.replace('_', ' ')}\n🕒 Timestamp: {timestamp}"
+                
+                def send_telegram_photo(token, chat_id, filepath, caption=""):
+                    import urllib.request
+                    import uuid
+                    import os
+                    try:
+                        boundary = uuid.uuid4().hex
+                        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+                        
+                        with open(filepath, 'rb') as f:
+                            file_content = f.read()
+                        
+                        filename = os.path.basename(filepath)
+                        parts = [
+                            f"--{boundary}".encode('utf-8'),
+                            b'Content-Disposition: form-data; name="chat_id"',
+                            b'',
+                            str(chat_id).encode('utf-8')
+                        ]
+                        if caption:
+                            parts.extend([
+                                f"--{boundary}".encode('utf-8'),
+                                b'Content-Disposition: form-data; name="caption"',
+                                b'',
+                                caption.encode('utf-8')
+                            ])
+                        parts.extend([
+                            f"--{boundary}".encode('utf-8'),
+                            f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode('utf-8'),
+                            b'Content-Type: image/png',
+                            b'',
+                            file_content,
+                            f"--{boundary}--".encode('utf-8')
+                        ])
+                        body = b'\r\n'.join(parts)
+                        req = urllib.request.Request(
+                            url,
+                            data=body,
+                            headers={
+                                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                'Content-Length': str(len(body))
+                            },
+                            method='POST'
+                        )
+                        with urllib.request.urlopen(req, timeout=20) as response:
+                            logger.info(f"Telegram photo sent successfully, status: {response.status}")
+                            return response.read()
+                    except Exception as tg_err:
+                        logger.error(f"Failed to send Telegram photo: {tg_err}", exc_info=True)
+                
+                await asyncio.to_thread(send_telegram_photo, token, chat_id, filepath, caption)
     except Exception as e:
         logger.error(f"Failed to take screenshot: {e}", exc_info=True)
 

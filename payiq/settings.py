@@ -140,6 +140,10 @@ REST_FRAMEWORK = {
 # Bot execution interval in seconds (how often bot runs when started)
 BOT_EXECUTION_INTERVAL = 30  # Default: 60 seconds (1 minute)
 
+# Telegram configurations
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+
 CELERY_BEAT_SCHEDULE = {
     'run-bot-every-30-seconds': {
         'task': 'deposit.task.run_bot',
