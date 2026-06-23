@@ -63,6 +63,8 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     ports:
       - "${WEB_PORT:-8001}:8001"
     volumes:
@@ -191,6 +193,8 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:5173}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     volumes:
       - logs_data:/app/logs
     depends_on:
