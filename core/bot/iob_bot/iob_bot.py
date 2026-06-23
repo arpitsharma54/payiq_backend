@@ -564,6 +564,10 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
 
         # Accounts menu
         await send_status('running', 'Navigating to Accounts')
+        try:
+            await page.evaluate("const el = document.querySelector('app-message-handler'); if (el) el.remove();")
+        except Exception:
+            pass
         await page.locator("#desktop_nav_menu_1 > .content-align-vertical-center").click()
         logger.info("Accounts menu clicked")
 
