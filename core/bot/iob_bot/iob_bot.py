@@ -68,32 +68,26 @@ async def check_stop_and_raise(bank_account_id: int, send_status=None):
 async def save_screenshot(page, prefix="error"):
     try:
         if page:
-            screenshots_dir = os.path.join(settings.BASE_DIR, 'logs', 'screenshots')
-            os.makedirs(screenshots_dir, exist_ok=True)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{prefix}_{timestamp}.png"
-            filepath = os.path.join(screenshots_dir, filename)
-            await page.screenshot(path=filepath, full_page=True)
-            logger.info(f"Screenshot saved to {filepath}")
-
             # Send to Telegram if configured
             token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
             chat_id = getattr(settings, 'TELEGRAM_CHAT_ID', None)
             if token and chat_id:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"{prefix}_{timestamp}.png"
+                
+                # Take screenshot in-memory (bytes) to avoid disk usage/bloat
+                screenshot_bytes = await page.screenshot(type="png", full_page=True)
+                logger.info("In-memory screenshot captured for Telegram alert")
+                
                 caption = f"🚨 IOB Bot Failure Alert\n\n📌 Event: {prefix.replace('_', ' ')}\n🕒 Timestamp: {timestamp}"
                 
-                def send_telegram_photo(token, chat_id, filepath, caption=""):
+                def send_telegram_photo(token, chat_id, photo_bytes, filename, caption=""):
                     import urllib.request
                     import uuid
-                    import os
                     try:
                         boundary = uuid.uuid4().hex
                         url = f"https://api.telegram.org/bot{token}/sendPhoto"
                         
-                        with open(filepath, 'rb') as f:
-                            file_content = f.read()
-                        
-                        filename = os.path.basename(filepath)
                         parts = [
                             f"--{boundary}".encode('utf-8'),
                             b'Content-Disposition: form-data; name="chat_id"',
@@ -112,7 +106,7 @@ async def save_screenshot(page, prefix="error"):
                             f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode('utf-8'),
                             b'Content-Type: image/png',
                             b'',
-                            file_content,
+                            photo_bytes,
                             f"--{boundary}--".encode('utf-8')
                         ])
                         body = b'\r\n'.join(parts)
@@ -131,9 +125,11 @@ async def save_screenshot(page, prefix="error"):
                     except Exception as tg_err:
                         logger.error(f"Failed to send Telegram photo: {tg_err}", exc_info=True)
                 
-                await asyncio.to_thread(send_telegram_photo, token, chat_id, filepath, caption)
+                await asyncio.to_thread(send_telegram_photo, token, chat_id, screenshot_bytes, filename, caption)
+            else:
+                logger.debug("Telegram not configured, skipping screenshot alert")
     except Exception as e:
-        logger.error(f"Failed to take screenshot: {e}", exc_info=True)
+        logger.error(f"Failed to take/send screenshot: {e}", exc_info=True)
 
 
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
