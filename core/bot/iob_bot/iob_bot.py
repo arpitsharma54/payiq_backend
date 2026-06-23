@@ -65,6 +65,20 @@ async def check_stop_and_raise(bank_account_id: int, send_status=None):
         raise BotStoppedException(f"Bot stopped by user request for account {bank_account_id}")
 
 
+async def save_screenshot(page, prefix="error"):
+    try:
+        if page:
+            screenshots_dir = os.path.join(settings.BASE_DIR, 'logs', 'screenshots')
+            os.makedirs(screenshots_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{prefix}_{timestamp}.png"
+            filepath = os.path.join(screenshots_dir, filename)
+            await page.screenshot(path=filepath, full_page=True)
+            logger.info(f"Screenshot saved to {filepath}")
+    except Exception as e:
+        logger.error(f"Failed to take screenshot: {e}", exc_info=True)
+
+
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
     channel_layer = get_channel_layer()
     payload = {
@@ -384,7 +398,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             # domcontentloaded is enough — the form is in the initial HTML, not lazy-loaded
             await page.wait_for_load_state('domcontentloaded', timeout=15000)
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_redirect_error_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Login redirect button not found (may already be on form): {e}")
 
         # Fill user ID — wait_for_selector polls until element is in DOM, no extra networkidle needed
@@ -404,7 +418,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             await user_id_input.wait_for(timeout=30000)
             await user_id_input.fill(username)
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_userid_error_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Error filling user ID: {e}")
             continue
 
@@ -414,7 +428,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             await password_input.type(password)
             logger.info("Credentials filled")
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_password_error_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Error filling password: {e}")
             continue
 
@@ -425,7 +439,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             img_path = os.path.join(BOT_DIR, f"captcha_{bank_account_id}.png")
             await canvas.screenshot(path=img_path)
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_captcha_capture_error_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Error capturing captcha: {e}")
             continue
 
@@ -453,7 +467,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             await send_status('running', 'Submitting login')
             logger.info("Login button clicked")
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_submit_error_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Error submitting login form: {e}")
             continue
 
@@ -461,7 +475,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
         try:
             await page.wait_for_load_state('domcontentloaded', timeout=20000)
         except Exception as e:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_post_submit_timeout_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.warning(f"Timeout after login submit: {e}")
 
         await asyncio.sleep(1)
@@ -472,7 +486,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             try:
                 await page.get_by_role("button", name="Close").click()
             except Exception:
-                await page.screenshot(path="debug.png", full_page=True)
+                await save_screenshot(page, f"login_close_error_btn_failed_acc{bank_account_id}_attempt{captcha_attempt}")
                 pass
             logger.warning(f"Login error on attempt {captcha_attempt}")
             await send_status('running', f'Login error, retrying ({captcha_attempt}/{max_captcha_retries})')
@@ -485,7 +499,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             logger.info("Login successful")
             return True
         except Exception:
-            await page.screenshot(path="debug.png", full_page=True)
+            await save_screenshot(page, f"login_failed_still_on_login_page_acc{bank_account_id}_attempt{captcha_attempt}")
             logger.info("Login failed — still on login page")
 
     return False
@@ -601,6 +615,7 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
     except Exception as e:
         logger.error(f"Error downloading statement: {e}", exc_info=True)
         await send_status('error', f'Statement error: {e}')
+        await save_screenshot(page, f"download_statement_error_acc{bank_account_id}")
         raise
 
 
@@ -616,6 +631,7 @@ async def attempt_relogin(page, bank_account, send_status, bank_account_id: int,
             await page.goto(netbanking_url, wait_until='domcontentloaded', timeout=60000)
         except Exception as e:
             logger.warning(f"Navigation error during re-login: {e}")
+            await save_screenshot(page, f"relogin_nav_error_acc{bank_account_id}_attempt{attempt}")
             try:
                 await page.goto(netbanking_url, wait_until='domcontentloaded', timeout=60000)
                 await asyncio.sleep(3)
@@ -659,7 +675,7 @@ async def run_bot_for_account(bank_account_id: int):
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -747,6 +763,7 @@ async def run_bot_for_account(bank_account_id: int):
                     except Exception as e:
                         logger.error(f"Iteration {iteration} error: {e}", exc_info=True)
                         await send_status('error', f'Iteration {iteration} error: {e}')
+                        await save_screenshot(page, f"iteration_error_acc{bank_account_id}_iter{iteration}")
 
                         if await check_logged_out(page):
                             await send_status('running', 'Session expired — attempting re-login')
@@ -786,6 +803,7 @@ async def run_bot_for_account(bank_account_id: int):
             except Exception as e:
                 logger.error(f"Bot execution failed for account {bank_account_id}: {e}", exc_info=True)
                 await send_status('error', f'Bot failed: {e}')
+                await save_screenshot(page, f"bot_fatal_error_acc{bank_account_id}")
                 raise
 
             finally:

@@ -56,6 +56,20 @@ async def check_stop_and_raise(bank_account_id: int, send_status=None):
         raise BotStoppedException(f"Bot stopped by user request for account {bank_account_id}")
 
 
+async def save_screenshot(page, prefix="error"):
+    try:
+        if page:
+            screenshots_dir = os.path.join(settings.BASE_DIR, 'logs', 'screenshots')
+            os.makedirs(screenshots_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{prefix}_{timestamp}.png"
+            filepath = os.path.join(screenshots_dir, filename)
+            await page.screenshot(path=filepath, full_page=True)
+            logger.info(f"Screenshot saved to {filepath}")
+    except Exception as e:
+        logger.error(f"Failed to take screenshot: {e}", exc_info=True)
+
+
 async def send_status_to_websocket(status, message="", merchant_id=None, bank_account_id=None):
     channel_layer = get_channel_layer()
     payload = {
@@ -344,6 +358,7 @@ async def perform_login(page, login_page, bank_account, send_status, bank_accoun
     except Exception as e:
         logger.error(f"Login failed: {str(e)}", exc_info=True)
         await send_status('error', f'Login failed: {str(e)}')
+        await save_screenshot(login_page, f"login_failed_acc{bank_account_id}")
         return False
 
 
@@ -476,6 +491,7 @@ async def download_statement(login_page, bank_account_id: int, send_status) -> d
     except Exception as e:
         logger.error(f"Error downloading statement: {str(e)}", exc_info=True)
         await send_status('error', f'Error downloading statement: {str(e)}')
+        await save_screenshot(login_page, f"download_statement_error_acc{bank_account_id}")
         return {"saved": 0, "skipped": 0, "errors": 1, "extracted": 0}
 
 
@@ -532,6 +548,7 @@ async def attempt_relogin(page, bank_account, send_status, bank_account_id: int,
                 return True, login_page
         except Exception as e:
             logger.warning(f"Re-login attempt {attempt} failed: {str(e)}")
+            await save_screenshot(login_page or page, f"relogin_failed_acc{bank_account_id}_attempt{attempt}")
             continue
 
     await send_status('error', f'Re-login failed after {MAX_RELOGIN_ATTEMPTS} attempts. Stopping bot.')
@@ -693,6 +710,7 @@ async def run_bot_for_account(bank_account_id: int):
                     except Exception as e:
                         logger.error(f"Error in iteration {iteration}: {str(e)}")
                         await send_status('error', f'Iteration {iteration} error: {str(e)}')
+                        await save_screenshot(login_page or page, f"iteration_error_acc{bank_account_id}_iter{iteration}")
 
                         # Check if this error is due to logout
                         if await check_logged_out(login_page):
@@ -745,6 +763,7 @@ async def run_bot_for_account(bank_account_id: int):
             except Exception as e:
                 logger.error(f"Bot execution failed for bank account {bank_account_id}: {str(e)}", exc_info=True)
                 await send_status('error', f'Bot failed: {str(e)}')
+                await save_screenshot(login_page or page, f"bot_fatal_error_acc{bank_account_id}")
                 raise
 
             finally:
