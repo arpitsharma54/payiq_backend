@@ -546,9 +546,17 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             continue
 
         # Confirm login succeeded by checking login button is gone
-        login_button = page.get_by_role("button", name="UserId Login")
         try:
-            await login_button.wait_for(state="hidden", timeout=3000)
+            await page.wait_for_function("""
+                () => {
+                    return (
+                        document.body.innerText.includes("Funds Transfer") ||
+                        document.body.innerText.includes("Recent transactions") ||
+                        document.body.innerText.includes("Welcome")
+                    );
+                }
+            """, timeout=15000)
+
             logger.info("Login successful")
             return True
         except Exception:
