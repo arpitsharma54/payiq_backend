@@ -441,7 +441,7 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
     try:
         await page.get_by_text("Funds Transfer").wait_for(
             state="visible",
-            timeout=15000
+            timeout=5000
         )
         logger.info("Login successful")
         return True
@@ -656,11 +656,16 @@ async def download_statement(page, bank_account_id: int, send_status) -> dict:
         await page.wait_for_load_state("domcontentloaded")
 
         await page.get_by_role("listbox").get_by_text("CSV").wait_for(state="visible")
-
-        async with page.expect_download() as download_info:
-            await page.get_by_role("listbox").get_by_text("CSV").click()
-            logger.info("CSV download initiated")
-
+        
+        
+        try:
+            async with page.expect_download() as download_info:
+                await page.get_by_role("listbox").get_by_text("CSV").click()
+                logger.info("CSV download initiated")
+        except Exception as e:
+            logger.error(f"Error downloading CSV: {e} \n Executing download statement again", exc_info=True)
+            return await download_statement(page, bank_account_id, send_status)
+        
         download = await download_info.value
         csv_path = os.path.join(BOT_DIR, f"statement_{bank_account_id}.csv")
         await download.save_as(csv_path)
