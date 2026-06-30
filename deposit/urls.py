@@ -11,6 +11,7 @@ from .views import (
     PayinPublicSessionView,
     PayinPublicCheckStatusView,
     QueuedTransactionsView,
+    QueuedTransactionMarkUsedView,
     PayinReportExportView,
 )
 
@@ -23,6 +24,7 @@ urlpatterns = [
 
     # Queued transactions (extracted transactions with is_used=False)
     path('queued/', QueuedTransactionsView.as_view(), name='queued-transactions'),
+    path('queued/<int:pk>/mark-used/', QueuedTransactionMarkUsedView.as_view(), name='queued-transaction-mark-used'),
 
     # Public payment session endpoint (no authentication required)
     # This must come BEFORE the empty path to ensure it's matched correctly

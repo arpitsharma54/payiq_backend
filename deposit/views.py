@@ -1162,6 +1162,40 @@ class QueuedTransactionsView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class QueuedTransactionMarkUsedView(APIView):
+    """
+    API view for manually marking a queued extracted transaction as used.
+    POST: Mark transaction with given ID as used
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user_role = request.user.role.lower() if request.user.role else ''
+        is_super_admin = request.user.is_superuser or user_role == 'super_admin'
+
+        try:
+            transaction_obj = ExtractedTransactions.objects.get(id=pk, deleted_at=None)
+        except ExtractedTransactions.DoesNotExist:
+            return Response({
+                'error': 'Transaction not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_super_admin:
+            merchant_ids = request.user.get_accessible_merchant_ids()
+            if transaction_obj.bank_account.merchant_id not in merchant_ids:
+                return Response({
+                    'error': 'Permission denied'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        transaction_obj.is_used = True
+        transaction_obj.used_at = timezone.now()
+        transaction_obj.save(update_fields=['is_used', 'used_at'])
+
+        return Response({
+            'message': 'Transaction marked as used successfully'
+        }, status=status.HTTP_200_OK)
+
+
 class PayinReportExportView(APIView):
     """
     API view for exporting payins to Excel.
