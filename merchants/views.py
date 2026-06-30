@@ -291,9 +291,12 @@ class StartBotView(APIView):
 
         # Check if Celery workers are running
         try:
-            inspect = app.control.inspect()
+            inspect = app.control.inspect(timeout=2.0)
             active_workers = inspect.active()
-            if not active_workers:
+            # If inspect.active() returns None, it means the check timed out (workers are busy or unresponsive).
+            # We do NOT block the user in case of timeouts/errors; we only block if we successfully contact
+            # the broker and it returns an empty dict (which indicates 0 workers are registered).
+            if active_workers is not None and not active_workers:
                 return Response({
                     'message': 'Celery workers are not running. Please start Celery workers to execute bot tasks.',
                     'error': 'WORKERS_NOT_RUNNING',
