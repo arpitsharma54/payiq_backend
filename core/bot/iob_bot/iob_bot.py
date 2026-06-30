@@ -544,19 +544,12 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
             logger.warning(f"Login error on attempt {captcha_attempt}")
             await send_status('running', f'Login error, retrying ({captcha_attempt}/{max_captcha_retries})')
             continue
-
         # Confirm login succeeded by checking login button is gone
         try:
-            await page.wait_for_function("""
-                () => {
-                    return (
-                        document.body.innerText.includes("Funds Transfer") ||
-                        document.body.innerText.includes("Recent transactions") ||
-                        document.body.innerText.includes("Welcome")
-                    );
-                }
-            """, timeout=15000)
-
+            await page.get_by_text("Funds Transfer").wait_for(
+                state="visible",
+                timeout=15000
+            )
             logger.info("Login successful")
             return True
         except Exception:
