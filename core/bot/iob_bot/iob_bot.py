@@ -438,7 +438,15 @@ async def perform_login(page, bank_account, send_status, bank_account_id: int) -
     username = bank_account.username or ''
     password = bank_account.password or ''
     max_captcha_retries = 10
-
+    try:
+        await page.get_by_text("Funds Transfer").wait_for(
+            state="visible",
+            timeout=15000
+        )
+        logger.info("Login successful")
+        return True
+    except Exception:
+        pass
     for captcha_attempt in range(1, max_captcha_retries + 1):
         await check_stop_and_raise(bank_account_id, send_status)
         logger.info(f"Captcha attempt {captcha_attempt}/{max_captcha_retries}")
